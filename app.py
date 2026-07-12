@@ -273,7 +273,10 @@ menu_options = []
 if role != "Advance":
     menu_options.append("📊 Dashboard")
 menu_options.append("🏢 Workspace")
-menu_options.append("✍️ Voucher Portal")
+
+# Hide the Voucher Portal from the sidebar list entirely
+if role != "Advance":
+    menu_options.append("✍️ Voucher Portal")
 
 if role == "CEO":
     menu_options.append("⚙️ Settings")
@@ -549,7 +552,7 @@ elif menu == "🏢 Workspace":
                         if not is_read_only:
                             with st.form(f"add_entry_{ledger_type}_{pid}", clear_on_submit=True):
                                 f_col1, f_col2 = st.columns(2)
-                                new_title = f_col1.text_input("Concept Description", key=f"t_in_{ledger_type}_{pid}")
+                                new_title = f_col1.text_input("Component", key=f"t_in_{ledger_type}_{pid}")
                                 new_amount = f_col2.number_input("Value Amount (PKR)", min_value=0.0, step=500.0, key=f"a_in_{ledger_type}_{pid}")
                                 new_cheque = st.text_input("Cheque Number (Optional)", key=f"c_in_{ledger_type}_{pid}") if has_cheque else None
 
@@ -562,9 +565,11 @@ elif menu == "🏢 Workspace":
                                         confirm_and_rerun(f"📈 New {ledger_type.capitalize()} record '{new_title.strip()}' added (PKR {new_amount:,.2f}).", icon="📊")
 
                     def render_advances_tab(pid):
+                        # 1. Fetch available advance personas for the selection dropdown
                         advance_role_res = sb.table("users").select("username").eq("role", "Advance").order("username").execute()
                         advance_usernames = [r["username"] for r in advance_role_res.data] if advance_role_res.data else []
 
+                        # 2. Fetch current active allocations
                         adv_res = sb.table("advances").select("id, person_name, allocated_amount").eq("project_id", pid).order("person_name").execute()
                         adv_rows = db.to_df(adv_res, columns=["id", "person_name", "allocated_amount"])
 
@@ -579,16 +584,26 @@ elif menu == "🏢 Workspace":
                                 allocated = _safe_float(adv["allocated_amount"])
                                 remaining = allocated - spent_total
 
+                                is_owner = (role == "Advance" and current_user["username"] == adv["person_name"])
+                                
                                 with st.container(border=True):
-                                    ac1, ac2, ac3, ac4 = st.columns([2.2, 2, 2, 1.3])
-                                    ac1.markdown(f"**👤 {adv['person_name']}**")
-                                    ac2.metric("Allocated", f"PKR {allocated:,.2f}")
-                                    ac3.metric("Spent / Remaining", f"PKR {spent_total:,.2f} / PKR {remaining:,.2f}")
+                                    ac1, ac2 = st.columns([3.5, 2.5])
+                                    identity_text = f"👤 **{adv['person_name']}**" + (" *(You)*" if is_owner else "")
+                                    ac1.markdown(identity_text)
+                                    
+                                    ac2.markdown(
+                                        f"<p style='font-size:0.85rem; margin:0; text-align:right; color:#94a3b8;'>"
+                                        f"Given: <span style='color:#f8fafc; font-weight:600;'>PKR {allocated:,.0f}</span> | "
+                                        f"Bal: <span style='color:#10B981; font-weight:600;'>PKR {remaining:,.0f}</span>"
+                                        f"</p>", 
+                                        unsafe_allow_html=True
+                                    )
 
                                     can_manage = role in ("CEO", "Accountant")
                                     edit_key = f"edit_advperson_{adv_id}"
+                                    
                                     if can_manage:
-                                        if ac4.button("✏️ Edit", key=f"btn_{edit_key}", use_container_width=True):
+                                        if st.button("✏️ Edit Allocation Parameters", key=f"btn_{edit_key}", use_container_width=True):
                                             st.session_state[edit_key] = not st.session_state.get(edit_key, False)
                                             st.rerun()
 
@@ -596,9 +611,8 @@ elif menu == "🏢 Workspace":
                                         with st.form(f"form_{edit_key}"):
                                             if advance_usernames:
                                                 default_idx = advance_usernames.index(adv["person_name"]) if adv["person_name"] in advance_usernames else 0
-                                                edit_person = st.selectbox("Advance Person (must have 'Advance' role)", advance_usernames, index=default_idx)
+                                                edit_person = st.selectbox("Advance Person", advance_usernames, index=default_idx)
                                             else:
-                                                st.warning("No users with the 'Advance' role exist yet. Create one under ⚙️ Settings first.")
                                                 edit_person = adv["person_name"]
                                             edit_alloc = st.number_input("Allocated Amount (PKR)", min_value=0.0, step=500.0, value=allocated)
                                             fs1, fs2 = st.columns(2)
@@ -615,52 +629,63 @@ elif menu == "🏢 Workspace":
                                                 st.session_state[edit_key] = False
                                                 st.rerun()
 
-                                    is_owner = (role == "Advance" and current_user["username"] == adv["person_name"])
-                                    with st.expander(f"💵 Spending Log — {adv['person_name']} ({len(spends_df)} items)"):
+                                    with st.expander(f"📋 Spending Logs & Actions ({len(spends_df)} entries logged)", expanded=is_owner):
                                         if spends_df.empty:
                                             st.caption("No spend items logged yet.")
                                         else:
                                             for _, sp in spends_df.iterrows():
                                                 sp_c1, sp_c2 = st.columns([4, 2])
-                                                sp_c1.markdown(f"🧾 {sp['item_name']}")
+                                                sp_c1.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;🧾 {sp['item_name']}")
                                                 sp_c2.markdown(f"PKR {sp['amount_spent']:,.2f}")
 
                                         if is_owner:
                                             st.write("---")
+                                            st.markdown("➕ **Log New Project Expense**")
                                             with st.form(f"add_spend_{adv_id}", clear_on_submit=True):
                                                 sf1, sf2 = st.columns(2)
-                                                new_item = sf1.text_input("What did you spend it on?", key=f"item_{adv_id}")
+                                                new_item = sf1.text_input("Expense Description / Concept", key=f"item_{adv_id}")
                                                 new_spend_amt = sf2.number_input("Amount Spent (PKR)", min_value=0.0, step=100.0, key=f"spend_amt_{adv_id}")
-                                                if st.form_submit_button("➕ Log Spend", use_container_width=True):
+                                                if st.form_submit_button("➕ Submit Expense Record", use_container_width=True):
                                                     if new_item.strip() and new_spend_amt > 0:
                                                         if new_spend_amt > remaining + 0.001:
-                                                            st.error(f"This exceeds your remaining balance of PKR {remaining:,.2f}.")
+                                                            st.error(f"Action Blocked: This entry exceeds your remaining balance of PKR {remaining:,.2f}.")
                                                         else:
-                                                            sb.table("advance_spends").insert({"advance_id": adv_id, "item_name": new_item.strip(), "amount_spent": float(new_spend_amt)}).execute()
+                                                            sb.table("advance_spends").insert({
+                                                                "advance_id": adv_id, 
+                                                                "item_name": new_item.strip(), 
+                                                                "amount_spent": float(new_spend_amt)
+                                                            }).execute()
                                                             confirm_and_rerun(f"💵 Logged spend '{new_item.strip()}' (PKR {new_spend_amt:,.2f}).", icon="🧾")
                                                     else:
-                                                        st.error("Please enter a valid item and non-zero amount.")
+                                                        st.error("Please enter a valid item concept description and non-zero layout amount.")
 
+                        # ==========================================
+                        # 3. THE MISSING CREATION FORM (CRITICAL FIX)
+                        # Placed outside the loop so it renders even when table is empty!
+                        # ==========================================
                         if role in ("CEO", "Accountant"):
                             st.write("---")
-                            with st.expander("➕ Allocate New Staff Advance", expanded=False):
+                            with st.expander("➕ Allocate New Staff Advance", expanded=adv_rows.empty):
                                 if not advance_usernames:
-                                    st.warning("No users with the 'Advance' role exist yet. Create one under ⚙️ Settings first.")
+                                    st.warning("⚠️ No users with the 'Advance' role exist in database registry settings yet.")
                                 else:
-                                    with st.form(f"add_advance_{pid}", clear_on_submit=True):
-                                        af1, af2 = st.columns(2)
-                                        new_person = af1.selectbox("Advance Person (Advance role)", advance_usernames)
-                                        new_alloc = af2.number_input("Allocated Amount (PKR)", min_value=0.0, step=500.0)
-                                        if st.form_submit_button("➕ Allocate Advance", use_container_width=True):
-                                            if new_alloc > 0:
+                                    with st.form(f"global_allocate_advance_{pid}", clear_on_submit=True):
+                                        new_person = st.selectbox("Select Target Advance Field Worker", advance_usernames)
+                                        new_alloc = st.number_input("Initial Allocation Amount (PKR)", min_value=0.0, step=1000.0)
+                                        
+                                        if st.form_submit_button("➕ Provision Advanced Balance Outflow", use_container_width=True):
+                                            if new_person and new_alloc > 0:
                                                 try:
-                                                    sb.table("advances").insert({"project_id": pid, "person_name": new_person, "allocated_amount": float(new_alloc)}).execute()
-                                                    confirm_and_rerun(f"💳 Advance allocation of PKR {new_alloc:,.2f} granted to {new_person}.", icon="💵")
+                                                    sb.table("advances").insert({
+                                                        "project_id": pid,
+                                                        "person_name": new_person,
+                                                        "allocated_amount": float(new_alloc)
+                                                    }).execute()
+                                                    confirm_and_rerun(f"💳 Advanced PKR {new_alloc:,.2f} allocated to {new_person}.", icon="✅")
                                                 except Exception as e:
-                                                    st.error(f"Cannot allocate advance (this person may already have one on this project): {e}")
+                                                    st.error(f"Database insertion failed: {e}")
                                             else:
-                                                st.error("Please enter a non-zero amount.")
-
+                                                st.error("Please assign a valid numerical allowance metric.")
                     with t1: render_simple_form_tab(exp_data, "expense", "Expense")
                     with t2: render_simple_form_tab(inc_data, "income", "Income")
                     with t3: render_simple_form_tab(loan_data, "loan", "Loan")
@@ -702,8 +727,13 @@ elif menu == "🏢 Workspace":
 # ==============================================================================
 
 elif menu == "✍️ Voucher Portal":
-    st.title("✍️ Corporate Voucher Portal Log")
 
+    if role == "Advance":
+        st.error("🔒 Unauthorized: Access to the corporate voucher portal is restricted.")
+        st.stop()
+        
+    st.title("✍️ Corporate Voucher Portal Log")
+    
     if "v_form_title" not in st.session_state: st.session_state["v_form_title"] = ""
     if "v_form_amount" not in st.session_state: st.session_state["v_form_amount"] = 0.0
     if "v_form_type" not in st.session_state: st.session_state["v_form_type"] = ""
@@ -973,6 +1003,7 @@ elif menu == "⚙️ Settings" and role == "CEO":
 
             st.info(f"Targeting: **{selected_username}** | Active Role: `{current_target_role}`")
 
+            # --- FORM 1: ROLE UPDATE ---
             with st.form(f"change_role_form_{target_user_id}"):
                 st.markdown("🔄 **Update Account Role Assignment**")
                 role_options = ["Accountant", "Advance", "CEO"]
@@ -984,6 +1015,7 @@ elif menu == "⚙️ Settings" and role == "CEO":
 
                 new_assigned_role = st.selectbox("Select New Workspace Role", role_options, index=default_role_idx)
 
+                # This button belongs to the role form
                 if st.form_submit_button("Save New Role Matrix"):
                     dash_flag = True if new_assigned_role in ["Accountant", "CEO"] else False
                     sb.table("users").update({
@@ -991,17 +1023,18 @@ elif menu == "⚙️ Settings" and role == "CEO":
                     }).eq("id", target_user_id).execute()
                     confirm_and_rerun(f"🛡️ Role updated for '{selected_username}' to {new_assigned_role}.", icon="🔄")
             
-                with st.form(f"change_pass_form_{target_user_id}", clear_on_submit=True):
-                    st.markdown("🔒 **Administrative Security Key Reset**")
-                    new_pass = st.text_input("Assign New Security Key / Password", type="password")
+            # --- FORM 2: PASSWORD OVERWRITE (Now completely separated!) ---
+            with st.form(f"change_pass_form_{target_user_id}", clear_on_submit=True):
+                st.markdown("🔒 **Administrative Security Key Reset**")
+                new_pass = st.text_input("Assign New Security Key / Password", type="password")
 
+                # Move the submit button INSIDE this block so it belongs to this form
                 if st.form_submit_button("Force Overwrite Password"):
                     if new_pass.strip():
                         sb.table("users").update({"password": new_pass.strip()}).eq("id", target_user_id).execute()
                         confirm_and_rerun(f"🔒 Password updated for user '{selected_username}'.", icon="🔑")
                     else:
                         st.error("Password string empty.")
-
             st.markdown("⚠️ **Danger Zone**")
             if st.button(f"🚨 Permanently Revoke Access for '{selected_username}'", use_container_width=True, type="secondary"):
                 if selected_username == current_user["username"]:
