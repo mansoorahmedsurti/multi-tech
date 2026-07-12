@@ -4,7 +4,8 @@ import numpy as np
 import datetime
 import random
 import string
-from sqlalchemy import text
+import time
+from supabase import create_client
 
 st.set_page_config(
     page_title="FinLedger Pro",
@@ -14,172 +15,57 @@ st.set_page_config(
 )
 
 # ==============================================================================
-# 1. DATABASE CONNECTION LAYER (Dual-Mode: Supabase Postgres <-> SQLite Mock)
+# 1. DATABASE CONNECTION LAYER (Supabase REST API — Exclusive Backend)
 # ==============================================================================
 
 class DBConnection:
     def __init__(self):
-        self.mode = "sqlite"
-        self.conn = None
-        self.sqlite_conn = None
+        self.client = None
 
-        # Try establishing Postgres connection first
         try:
-            if "connections" in st.secrets and "postgresql" in st.secrets["connections"]:
-                self.conn = st.connection("postgresql", type="sql")
-                self.conn.query("SELECT 1", ttl=0)
-                self.mode = "postgres"
+            url = st.secrets["supabase"]["url"]
+            key = st.secrets["supabase"]["key"]
+            self.client = create_client(url, key)
+
+            # Test connection by hitting the users table
+            self.client.table("users").select("id").limit(1).execute()
+        except Exception as e:
+            st.error(
+                f"🚨 **Critical: Cannot connect to Supabase.**\n\n"
+                f"Error: `{e}`\n\n"
+                f"Please check your `.streamlit/secrets.toml` configuration."
+            )
+            st.stop()
+
+        self._ensure_seed_users()
+
+    def _ensure_seed_users(self):
+        """Seed default users if the table is empty."""
+        try:
+            result = self.client.table("users").select("id", count="exact").limit(0).execute()
+            if result.count == 0:
+                self.client.table("users").insert([
+                    {"username": "ceo", "password": "ceo", "role": "CEO", "can_view_dashboard": True},
+                    {"username": "accountant", "password": "accountant", "role": "Accountant", "can_view_dashboard": True},
+                ]).execute()
         except Exception:
-            self.mode = "sqlite"
+            pass
 
-        # Fallback to local SQLite if Postgres isn't available
-        if self.mode == "sqlite":
-            import sqlite3
-            self.sqlite_conn = sqlite3.connect("project_ledger_auth.db", check_same_thread=False)
+        try:
+            master = self.client.table("users").select("id").eq("username", "asif.arain").execute()
+            if not master.data:
+                self.client.table("users").insert({
+                    "username": "asif.arain", "password": "admin123", "role": "CEO", "can_view_dashboard": True
+                }).execute()
+        except Exception:
+            pass
 
-        # Run schema creation and migrations completely separated from connection setup
-        self._init_database_schema()
-        self._run_migrations()
+    def to_df(self, response, columns=None):
+        """Convert a Supabase response to a pandas DataFrame."""
+        if response.data:
+            return pd.DataFrame(response.data)
+        return pd.DataFrame(columns=columns or [])
 
-    def execute(self, sql_str, params=None):
-        if params is None:
-            params = {}
-        if self.mode == "postgres":
-            with self.conn.session as s:
-                s.execute(text(sql_str), params)
-                s.commit()
-        else:
-            cursor = self.sqlite_conn.cursor()
-            cursor.execute(sql_str, params)
-            self.sqlite_conn.commit()
-
-    def query(self, query_str, **params):
-        if self.mode == "postgres":
-            return self.conn.query(query_str, params=params, ttl=0)
-        return pd.read_sql_query(query_str, self.sqlite_conn, params=params)
-
-    def _init_database_schema(self):
-        """Creates tables dynamically depending on the active database mode."""
-        pk_type = "SERIAL PRIMARY KEY" if self.mode == "postgres" else "INTEGER PRIMARY KEY AUTOINCREMENT"
-
-        queries = [
-            f"""
-            CREATE TABLE IF NOT EXISTS users (
-            id {pk_type},
-            username TEXT NOT NULL UNIQUE,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('CEO', 'Accountant', 'Advance')),
-            can_view_dashboard INTEGER NOT NULL DEFAULT 0,
-            reset_token TEXT
-            );
-            """,
-            f"""
-            CREATE TABLE IF NOT EXISTS companies (
-            id {pk_type},
-            name TEXT NOT NULL UNIQUE,
-            site TEXT,
-            description TEXT
-            );
-            """,
-            f"""
-            CREATE TABLE IF NOT EXISTS projects (
-            id {pk_type},
-            company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            description TEXT,
-            UNIQUE(company_id, name)
-            );
-            """,
-            f"""
-            CREATE TABLE IF NOT EXISTS ledgers (
-            id {pk_type},
-            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            type TEXT NOT NULL CHECK (type IN ('expense', 'income', 'loan')),
-            title TEXT NOT NULL,
-            cheque_number TEXT,
-            voucher_ref_id INTEGER,
-            amount REAL NOT NULL DEFAULT 0.0,
-            created_at TEXT NOT NULL DEFAULT CURRENT_DATE
-            );
-            """,
-            f"""
-            CREATE TABLE IF NOT EXISTS advances (
-            id {pk_type},
-            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            person_name TEXT NOT NULL,
-            allocated_amount REAL NOT NULL DEFAULT 0.0,
-            UNIQUE(project_id, person_name)
-            );
-            """,
-            f"""
-            CREATE TABLE IF NOT EXISTS advance_spends (
-            id {pk_type},
-            advance_id INTEGER NOT NULL REFERENCES advances(id) ON DELETE CASCADE,
-            item_name TEXT NOT NULL,
-            amount_spent REAL NOT NULL DEFAULT 0.0,
-            created_at TEXT NOT NULL DEFAULT CURRENT_DATE
-            );
-            """,
-            f"""
-            CREATE TABLE IF NOT EXISTS vouchers (
-            id {pk_type},
-            company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-            project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-            title TEXT NOT NULL,
-            amount REAL NOT NULL DEFAULT 0.0,
-            remarks TEXT,
-            type TEXT NOT NULL,
-            created_by TEXT,
-            review_remarks TEXT,
-            status TEXT NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending', 'Approved', 'Declined', 'To Be Discussed')),
-            created_at TEXT NOT NULL DEFAULT CURRENT_DATE
-            );
-            """
-        ]
-
-        for q in queries:
-            self.execute(q)
-
-        # Base user verification pipeline
-        check_user_df = self.query("SELECT COUNT(*) as count FROM users")
-        if not check_user_df.empty and int(check_user_df.iloc[0]["count"]) == 0:
-            self.execute("INSERT INTO users (username, password, role, can_view_dashboard) VALUES ('ceo', 'ceo', 'CEO', 1);")
-            self.execute("INSERT INTO users (username, password, role, can_view_dashboard) VALUES ('accountant', 'accountant', 'Accountant', 1);")
-
-        # Automatically ensure the master user exists on startup
-        check_master = self.query("SELECT id FROM users WHERE username = 'asif.arain'")
-        if check_master.empty:
-            self.execute("INSERT INTO users (username, password, role, can_view_dashboard) VALUES ('asif.arain', 'admin123', 'CEO', 1);")
-
-    def _run_migrations(self):
-        for table, col, col_type in [
-            ("companies", "site", "TEXT"),
-            ("companies", "description", "TEXT"),
-            ("projects", "description", "TEXT"),
-            ("ledgers", "cheque_number", "TEXT"),
-            ("ledgers", "voucher_ref_id", "INTEGER"),
-            ("vouchers", "created_by", "TEXT"),
-            ("vouchers", "review_remarks", "TEXT"),
-            ("vouchers", "project_id", "INTEGER"),
-            ("users", "reset_token", "TEXT")
-        ]:
-            try:
-                if self.mode == "postgres":
-                    existing = self.conn.query(
-                        f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table}' AND column_name = '{col}'",
-                        ttl=0,
-                    )
-                    if existing.empty:
-                        self.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
-                else:
-                    cursor = self.sqlite_conn.cursor()
-                    cursor.execute(f"PRAGMA table_info({table})")
-                    columns = {row[1] for row in cursor.fetchall()}
-                    if col not in columns:
-                        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
-                        self.sqlite_conn.commit()
-            except Exception:
-                pass
 
 # --- DEFINE RESOURCE CACHE BEFORE CALLING ---
 @st.cache_resource
@@ -187,6 +73,7 @@ def get_db():
     return DBConnection()
 
 db = get_db()
+sb = db.client  # shorthand for the supabase client
 
 # ==============================================================================
 # HELPER MATHEMATICAL COEFFICIENTS
@@ -197,23 +84,45 @@ def _safe_float(value):
         return 0.0
     return float(value)
 
+def confirm_and_rerun(message, icon="✅"):
+    """Shows a persistent success confirmation for at least 3 seconds, then reruns."""
+    st.toast(message, icon=icon)
+    placeholder = st.empty()
+    placeholder.success(message, icon=icon)
+    time.sleep(3)
+    st.rerun()
+
+def confirm_warn_and_rerun(message, icon="⚠️"):
+    """Same as confirm_and_rerun but for warnings/declines/removals."""
+    st.toast(message, icon=icon)
+    placeholder = st.empty()
+    placeholder.warning(message, icon=icon)
+    time.sleep(3)
+    st.rerun()
+
 def get_project_balance(project_id):
-    ledger_df = db.query("SELECT type, COALESCE(amount, 0) AS amount FROM ledgers WHERE project_id = :pid", pid=project_id)
+    ledger_res = sb.table("ledgers").select("type, amount").eq("project_id", project_id).execute()
+    ledger_df = db.to_df(ledger_res, columns=["type", "amount"])
+    if not ledger_df.empty:
+        ledger_df["amount"] = ledger_df["amount"].fillna(0)
     income = ledger_df[ledger_df["type"] == "income"]["amount"].sum() if not ledger_df.empty else 0.0
     expense = ledger_df[ledger_df["type"] == "expense"]["amount"].sum() if not ledger_df.empty else 0.0
     loans = ledger_df[ledger_df["type"] == "loan"]["amount"].sum() if not ledger_df.empty else 0.0
 
-    v_df = db.query("SELECT COALESCE(SUM(amount), 0) AS v_total FROM vouchers WHERE project_id = :pid AND status = 'Approved'", pid=project_id)
-    approved_vouchers_sum = _safe_float(v_df.iloc[0]["v_total"] if not v_df.empty else 0.0)
+    v_res = sb.table("vouchers").select("amount").eq("project_id", project_id).eq("status", "Approved").execute()
+    approved_vouchers_sum = sum(_safe_float(r["amount"]) for r in v_res.data) if v_res.data else 0.0
 
-    adv_df = db.query("SELECT id, COALESCE(allocated_amount, 0) AS alloc FROM advances WHERE project_id = :pid", pid=project_id)
-    total_allocated = adv_df["alloc"].sum() if not adv_df.empty else 0.0
+    adv_res = sb.table("advances").select("id, allocated_amount").eq("project_id", project_id).execute()
+    adv_df = db.to_df(adv_res, columns=["id", "allocated_amount"])
+    if not adv_df.empty:
+        adv_df["allocated_amount"] = adv_df["allocated_amount"].fillna(0)
+    total_allocated = adv_df["allocated_amount"].sum() if not adv_df.empty else 0.0
     total_spent = 0.0
 
     if not adv_df.empty:
-        a_ids = ",".join(str(int(x)) for x in adv_df["id"].tolist())
-        spends_df = db.query(f"SELECT COALESCE(SUM(amount_spent), 0) AS total FROM advance_spends WHERE advance_id IN ({a_ids})")
-        total_spent = _safe_float(spends_df.iloc[0]["total"] if not spends_df.empty else 0.0)
+        a_ids = [int(x) for x in adv_df["id"].tolist()]
+        spends_res = sb.table("advance_spends").select("amount_spent").in_("advance_id", a_ids).execute()
+        total_spent = sum(_safe_float(r["amount_spent"]) for r in spends_res.data) if spends_res.data else 0.0
 
     unspent_cash_returned = total_allocated - total_spent
 
@@ -227,7 +136,8 @@ def get_project_balance(project_id):
     }
 
 def get_company_balance(company_id):
-    project_df = db.query("SELECT id FROM projects WHERE company_id = :cid", cid=company_id)
+    project_res = sb.table("projects").select("id").eq("company_id", company_id).execute()
+    project_df = db.to_df(project_res, columns=["id"])
     if project_df.empty:
         return {"income": 0.0, "expense": 0.0, "loans": 0.0, "advances_allocated": 0.0, "advances_spent": 0.0, "advances_remaining": 0.0, "balance": 0.0, "profit": 0.0}
 
@@ -285,10 +195,7 @@ border-left: 5px solid #0ea5e9 !important;
 """, unsafe_allow_html=True)
 
 st.sidebar.markdown("### 💎 FinLedger Pro")
-if db.mode == "sqlite":
-    st.sidebar.warning("Local SQL Mode Active", icon="🔌")
-else:
-    st.sidebar.success("Live Supabase Synced", icon="⚡")
+st.sidebar.success("Live Supabase Synced", icon="⚡")
 
 # ==============================================================================
 # 3. AUTHENTICATION CONTROLLER (With Mock Email Pass Reset Flow)
@@ -308,11 +215,12 @@ if st.session_state["user"] is None:
                 u_name = st.text_input("Username")
                 p_word = st.text_input("Password", type="password")
                 if st.form_submit_button("Login", type="primary", use_container_width=True):
-                    res = db.query("SELECT id, username, password, role, can_view_dashboard FROM users WHERE LOWER(username) = LOWER(:u)", u=u_name.strip())
-                    if not res.empty and res.iloc[0]["password"] == p_word:
+                    res = sb.table("users").select("id, username, password, role, can_view_dashboard").ilike("username", u_name.strip()).execute()
+                    if res.data and res.data[0]["password"] == p_word:
+                        u = res.data[0]
                         st.session_state["user"] = {
-                            "id": int(res.iloc[0]["id"]), "username": res.iloc[0]["username"],
-                            "role": res.iloc[0]["role"], "can_view_dashboard": bool(res.iloc[0]["can_view_dashboard"])
+                            "id": int(u["id"]), "username": u["username"],
+                            "role": u["role"], "can_view_dashboard": bool(u["can_view_dashboard"])
                         }
                         st.rerun()
                     else:
@@ -330,10 +238,10 @@ if st.session_state["user"] is None:
                 st.write("Enter your ID to simulate receiving a master verification link.")
                 reset_user = st.text_input("Username / ID Key")
                 if st.form_submit_button("Generate Reset Token Link", type="primary", use_container_width=True):
-                    res = db.query("SELECT id FROM users WHERE LOWER(username) = LOWER(:u)", u=reset_user.strip())
-                    if not res.empty:
+                    res = sb.table("users").select("id").ilike("username", reset_user.strip()).execute()
+                    if res.data:
                         mock_token = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-                        db.execute("UPDATE users SET reset_token = :t WHERE LOWER(username) = LOWER(:u)", {"t": mock_token, "u": reset_user.strip()})
+                        sb.table("users").update({"reset_token": mock_token}).ilike("username", reset_user.strip()).execute()
                         st.info(f"📬 **Simulated System Email Outflow:**\n\nTo: `{reset_user.strip()}@company.com`\nSubject: Password Reset Token\n\nUse security token: **`{mock_token}`** to complete changes below.")
                     else:
                         st.error("Account identity not found.")
@@ -344,9 +252,9 @@ if st.session_state["user"] is None:
                 v_token = st.text_input("Security Token")
                 v_pass = st.text_input("New System Password", type="password")
                 if st.form_submit_button("Overwrite Password Security Structure", use_container_width=True):
-                    chk = db.query("SELECT reset_token FROM users WHERE LOWER(username) = LOWER(:u)", u=v_user.strip())
-                    if not chk.empty and chk.iloc[0]["reset_token"] == v_token.strip() and v_token.strip() != "":
-                        db.execute("UPDATE users SET password = :p, reset_token = NULL WHERE LOWER(username) = LOWER(:u)", {"p": v_pass.strip(), "u": v_user.strip()})
+                    chk = sb.table("users").select("reset_token").ilike("username", v_user.strip()).execute()
+                    if chk.data and chk.data[0]["reset_token"] == v_token.strip() and v_token.strip() != "":
+                        sb.table("users").update({"password": v_pass.strip(), "reset_token": None}).ilike("username", v_user.strip()).execute()
                         st.success("Access updated! You can log in now.")
                     else:
                         st.error("Token invalid or expired.")
@@ -393,8 +301,10 @@ if menu == "📊 Dashboard":
     if time_filter == "Last 30 Days": date_limit = today - datetime.timedelta(days=30)
     elif time_filter == "This Month": date_limit = today.replace(day=1)
 
-    ledgers_df = db.query("SELECT type, amount, created_at FROM ledgers")
-    advances_df = db.query("SELECT id, allocated_amount FROM advances")
+    ledgers_res = sb.table("ledgers").select("type, amount, created_at").execute()
+    ledgers_df = db.to_df(ledgers_res, columns=["type", "amount", "created_at"])
+    advances_res = sb.table("advances").select("id, allocated_amount").execute()
+    advances_df = db.to_df(advances_res, columns=["id", "allocated_amount"])
 
     if ledgers_df.empty:
         overall_bal, total_loans, net_profit, unspent_advances = 0.0, 0.0, 0.0, 0.0
@@ -410,9 +320,9 @@ if menu == "📊 Dashboard":
         alloc_adv = advances_df["allocated_amount"].sum() if not advances_df.empty else 0.0
         spent_adv = 0.0
         if not advances_df.empty:
-            a_ids = ",".join(str(int(x)) for x in advances_df["id"].tolist())
-            spends_df = db.query(f"SELECT amount_spent FROM advance_spends WHERE advance_id IN ({a_ids})")
-            if not spends_df.empty: spent_adv = spends_df["amount_spent"].sum()
+            a_ids = [int(x) for x in advances_df["id"].tolist()]
+            spends_res = sb.table("advance_spends").select("amount_spent").in_("advance_id", a_ids).execute()
+            if spends_res.data: spent_adv = sum(_safe_float(r["amount_spent"]) for r in spends_res.data)
 
         unspent_advances = alloc_adv - spent_adv
         overall_bal = inc + loans - exp - alloc_adv + unspent_advances
@@ -455,7 +365,8 @@ elif menu == "🏢 Workspace":
     if is_read_only:
         st.info("👁️ Read-Only Mode: View access granted. Log modifications are restricted.")
 
-    companies_df = db.query("SELECT * FROM companies ORDER BY name")
+    companies_res = sb.table("companies").select("*").order("name").execute()
+    companies_df = db.to_df(companies_res, columns=["id", "name", "site", "description"])
 
     st.subheader("🏢 Corporate Portfolios")
 
@@ -464,11 +375,17 @@ elif menu == "🏢 Workspace":
         c_bal = get_company_balance(c_id)
 
         with st.container(border=True):
-            col_name, col_bal, col_prof, col_loan, col_btn = st.columns([2, 2.5, 2.5, 2.5, 1.5])
+            col_name, col_bal, col_prof, col_loan, col_edit, col_btn = st.columns([1.8, 2.2, 2.2, 2.2, 1, 1.3])
             col_name.markdown(f"<p class='compact-header'>{r['name']}</p>", unsafe_allow_html=True)
             col_bal.metric("Balance", f"PKR {c_bal['balance']:,.2f}")
             col_prof.metric("Net Profit", f"PKR {c_bal['profit']:,.2f}")
             col_loan.metric("Active Loans", f"PKR {c_bal['loans']:,.2f}")
+
+            is_editing_co = st.session_state.get("edit_co_id") == c_id
+            if not is_read_only:
+                if col_edit.button("✏️", key=f"edit_co_btn_{c_id}", use_container_width=True, help="Edit company details"):
+                    st.session_state["edit_co_id"] = None if is_editing_co else c_id
+                    st.rerun()
 
             is_active = st.session_state.get("sel_co_id") == c_id
             btn_label = "🔒 Close" if is_active else "📂 Open"
@@ -478,11 +395,40 @@ elif menu == "🏢 Workspace":
                 st.session_state["sel_proj_id"] = None
                 st.rerun()
 
+            if is_editing_co and not is_read_only:
+                with st.form(f"edit_co_form_{c_id}"):
+                    st.markdown("**✏️ Edit Company Details**")
+                    ec1, ec2 = st.columns(2)
+                    edit_name = ec1.text_input("Company Name", value=r["name"])
+                    edit_site = ec2.text_input("Location / Site", value=r["site"] if not pd.isna(r["site"]) else "")
+                    edit_desc = st.text_area("Description", value=r["description"] if not pd.isna(r["description"]) else "", height=68)
+                    sc1, sc2 = st.columns(2)
+                    save_co = sc1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
+                    cancel_co = sc2.form_submit_button("✖️ Cancel", use_container_width=True)
+                    if save_co:
+                        if edit_name.strip():
+                            try:
+                                sb.table("companies").update({
+                                    "name": edit_name.strip(),
+                                    "site": edit_site.strip() or None,
+                                    "description": edit_desc.strip() or None
+                                }).eq("id", c_id).execute()
+                                st.session_state["edit_co_id"] = None
+                                confirm_and_rerun(f"✏️ Company updated to '{edit_name.strip()}'.", icon="💾")
+                            except Exception as e:
+                                st.error(f"Cannot update company: {e}")
+                        else:
+                            st.error("Company name cannot be empty.")
+                    if cancel_co:
+                        st.session_state["edit_co_id"] = None
+                        st.rerun()
+
             if is_active:
                 st.write("---")
                 st.markdown(f"### 📁 Active Projects Node Panel — {r['name']}")
 
-                projects_df = db.query("SELECT id, name, description FROM projects WHERE company_id = :cid ORDER BY name", cid=c_id)
+                projects_res = sb.table("projects").select("id, name, description").eq("company_id", c_id).order("name").execute()
+                projects_df = db.to_df(projects_res, columns=["id", "name", "description"])
 
                 if projects_df.empty:
                     st.caption("No registered projects found under this entity structure.")
@@ -490,11 +436,44 @@ elif menu == "🏢 Workspace":
                     p_labels = [p["name"] for _, p in projects_df.iterrows()]
                     p_map = {p["name"]: int(p["id"]) for _, p in projects_df.iterrows()}
 
-                    chosen_p_label = st.selectbox("📂 Switch Active Project Target Tab:", p_labels, key=f"p_pop_select_{c_id}")
+                    p_sel_col, p_edit_col = st.columns([5, 1])
+                    chosen_p_label = p_sel_col.selectbox("📂 Switch Active Project Target Tab:", p_labels, key=f"p_pop_select_{c_id}")
                     pid = p_map[chosen_p_label]
 
                     active_project_row = projects_df[projects_df["id"] == pid].iloc[0]
                     p_description_content = active_project_row["description"]
+
+                    is_editing_proj = st.session_state.get("edit_proj_id") == pid
+                    if not is_read_only:
+                        p_edit_col.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                        if p_edit_col.button("✏️ Edit", key=f"edit_proj_btn_{pid}", use_container_width=True):
+                            st.session_state["edit_proj_id"] = None if is_editing_proj else pid
+                            st.rerun()
+
+                    if is_editing_proj and not is_read_only:
+                        with st.form(f"edit_proj_form_{pid}"):
+                            st.markdown("**✏️ Edit Project Details**")
+                            edit_p_name = st.text_input("Project Title", value=active_project_row["name"])
+                            edit_p_desc = st.text_area("Project Description / Scope Notes", value=p_description_content if not pd.isna(p_description_content) else "", height=68)
+                            epc1, epc2 = st.columns(2)
+                            save_proj = epc1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
+                            cancel_proj = epc2.form_submit_button("✖️ Cancel", use_container_width=True)
+                            if save_proj:
+                                if edit_p_name.strip():
+                                    try:
+                                        sb.table("projects").update({
+                                            "name": edit_p_name.strip(),
+                                            "description": edit_p_desc.strip() or None
+                                        }).eq("id", pid).execute()
+                                        st.session_state["edit_proj_id"] = None
+                                        confirm_and_rerun(f"✏️ Project updated to '{edit_p_name.strip()}'.", icon="💾")
+                                    except Exception as e:
+                                        st.error(f"Cannot update project: {e}")
+                                else:
+                                    st.error("Project title cannot be empty.")
+                            if cancel_proj:
+                                st.session_state["edit_proj_id"] = None
+                                st.rerun()
 
                     p_bal = get_project_balance(pid)
 
@@ -508,23 +487,62 @@ elif menu == "🏢 Workspace":
 
                     st.write("---")
 
-                    exp_data = db.query("SELECT id, title, amount FROM ledgers WHERE project_id = :pid AND type = 'expense'", pid=pid)
-                    inc_data = db.query("SELECT id, title, amount FROM ledgers WHERE project_id = :pid AND type = 'income'", pid=pid)
-                    loan_data = db.query("SELECT id, title, amount FROM ledgers WHERE project_id = :pid AND type = 'loan'", pid=pid)
-                    adv_data = db.query("SELECT id, person_name as title, allocated_amount as amount FROM advances WHERE project_id = :pid", pid=pid)
+                    exp_res = sb.table("ledgers").select("id, title, amount, cheque_number").eq("project_id", pid).eq("type", "expense").execute()
+                    exp_data = db.to_df(exp_res, columns=["id", "title", "amount", "cheque_number"])
+                    inc_res = sb.table("ledgers").select("id, title, amount, cheque_number").eq("project_id", pid).eq("type", "income").execute()
+                    inc_data = db.to_df(inc_res, columns=["id", "title", "amount", "cheque_number"])
+                    loan_res = sb.table("ledgers").select("id, title, amount, cheque_number").eq("project_id", pid).eq("type", "loan").execute()
+                    loan_data = db.to_df(loan_res, columns=["id", "title", "amount", "cheque_number"])
 
                     t1, t2, t3, t4 = st.tabs(["🔴 Expenses", "🟢 Income", "🔵 Loans", "💳 Staff Advances"])
 
                     def render_simple_form_tab(data_df, ledger_type, label_name):
+                        has_cheque = (ledger_type == "income")
+
                         if not data_df.empty:
-                            st.dataframe(
-                                data_df[["title", "amount"]],
-                                column_config={
-                                    "title": st.column_config.TextColumn(f"{label_name} Description"),
-                                    "amount": st.column_config.NumberColumn("Amount (PKR)", format="PKR %,.2f")
-                                },
-                                use_container_width=True, hide_index=True
-                            )
+                            for _, row in data_df.iterrows():
+                                row_id = int(row["id"])
+                                edit_key = f"edit_{ledger_type}_{row_id}"
+                                is_editing_row = st.session_state.get(edit_key, False)
+                                cheque_val = row["cheque_number"] if "cheque_number" in row and not pd.isna(row["cheque_number"]) else ""
+
+                                with st.container(border=True):
+                                    rc1, rc2, rc3 = st.columns([4, 2.5, 1])
+                                    title_display = row["title"]
+                                    if has_cheque and cheque_val:
+                                        title_display += f"  \n🏦 Cheque #: `{cheque_val}`"
+                                    rc1.markdown(f"**{title_display}**")
+                                    rc2.markdown(f"PKR {row['amount']:,.2f}")
+                                    if not is_read_only:
+                                        if rc3.button("✏️ Edit", key=f"btn_{edit_key}", use_container_width=True):
+                                            st.session_state[edit_key] = not is_editing_row
+                                            st.rerun()
+
+                                    if is_editing_row and not is_read_only:
+                                        with st.form(f"form_{edit_key}"):
+                                            fe1, fe2 = st.columns(2)
+                                            edit_title = fe1.text_input(f"{label_name} Description", value=row["title"])
+                                            edit_amount = fe2.number_input("Amount (PKR)", min_value=0.0, step=500.0, value=float(row["amount"]))
+                                            edit_cheque = st.text_input("Cheque Number (Optional)", value=cheque_val) if has_cheque else None
+                                            fs1, fs2 = st.columns(2)
+                                            save_row = fs1.form_submit_button("💾 Save", type="primary", use_container_width=True)
+                                            cancel_row = fs2.form_submit_button("✖️ Cancel", use_container_width=True)
+                                            if save_row:
+                                                if edit_title.strip() and edit_amount > 0:
+                                                    try:
+                                                        update_data = {"title": edit_title.strip(), "amount": float(edit_amount)}
+                                                        if has_cheque:
+                                                            update_data["cheque_number"] = (edit_cheque.strip() or None) if edit_cheque else None
+                                                        sb.table("ledgers").update(update_data).eq("id", row_id).execute()
+                                                        st.session_state[edit_key] = False
+                                                        confirm_and_rerun(f"✏️ {label_name} record updated to '{edit_title.strip()}'.", icon="💾")
+                                                    except Exception as e:
+                                                        st.error(f"Cannot update record: {e}")
+                                                else:
+                                                    st.error("Please enter a valid description and non-zero amount.")
+                                            if cancel_row:
+                                                st.session_state[edit_key] = False
+                                                st.rerun()
                         else:
                             st.caption("No records logged.")
 
@@ -533,25 +551,120 @@ elif menu == "🏢 Workspace":
                                 f_col1, f_col2 = st.columns(2)
                                 new_title = f_col1.text_input("Concept Description", key=f"t_in_{ledger_type}_{pid}")
                                 new_amount = f_col2.number_input("Value Amount (PKR)", min_value=0.0, step=500.0, key=f"a_in_{ledger_type}_{pid}")
+                                new_cheque = st.text_input("Cheque Number (Optional)", key=f"c_in_{ledger_type}_{pid}") if has_cheque else None
 
                                 if st.form_submit_button("➕ Add Record Row", use_container_width=True):
                                     if new_title.strip() and new_amount > 0:
-                                        if ledger_type == "advance":
-                                            try:
-                                                db.execute("INSERT INTO advances (project_id, person_name, allocated_amount) VALUES (:pid, :n, :a)", {"pid": pid, "n": new_title.strip(), "a": float(new_amount)})
-                                                st.toast(f"💳 Advanced Cash Allocation Granted to {new_title.strip()}!", icon="💵")
-                                                st.rerun()
-                                            except Exception as e:
-                                                st.error(f"Row already exists. ({e})")
-                                        else:
-                                            db.execute("INSERT INTO ledgers (project_id, type, title, amount) VALUES (:pid, :t, :title, :amount)", {"pid": pid, "t": ledger_type, "title": new_title.strip(), "amount": float(new_amount)})
-                                            st.toast(f"📈 New {ledger_type.capitalize()} Component Logged Seamlessly!", icon="📊")
+                                        insert_data = {"project_id": pid, "type": ledger_type, "title": new_title.strip(), "amount": float(new_amount)}
+                                        if has_cheque:
+                                            insert_data["cheque_number"] = (new_cheque.strip() or None) if new_cheque else None
+                                        sb.table("ledgers").insert(insert_data).execute()
+                                        confirm_and_rerun(f"📈 New {ledger_type.capitalize()} record '{new_title.strip()}' added (PKR {new_amount:,.2f}).", icon="📊")
+
+                    def render_advances_tab(pid):
+                        advance_role_res = sb.table("users").select("username").eq("role", "Advance").order("username").execute()
+                        advance_usernames = [r["username"] for r in advance_role_res.data] if advance_role_res.data else []
+
+                        adv_res = sb.table("advances").select("id, person_name, allocated_amount").eq("project_id", pid).order("person_name").execute()
+                        adv_rows = db.to_df(adv_res, columns=["id", "person_name", "allocated_amount"])
+
+                        if adv_rows.empty:
+                            st.caption("No staff advances allocated for this project yet.")
+                        else:
+                            for _, adv in adv_rows.iterrows():
+                                adv_id = int(adv["id"])
+                                spends_res = sb.table("advance_spends").select("id, item_name, amount_spent").eq("advance_id", adv_id).order("id", desc=True).execute()
+                                spends_df = db.to_df(spends_res, columns=["id", "item_name", "amount_spent"])
+                                spent_total = _safe_float(spends_df["amount_spent"].sum()) if not spends_df.empty else 0.0
+                                allocated = _safe_float(adv["allocated_amount"])
+                                remaining = allocated - spent_total
+
+                                with st.container(border=True):
+                                    ac1, ac2, ac3, ac4 = st.columns([2.2, 2, 2, 1.3])
+                                    ac1.markdown(f"**👤 {adv['person_name']}**")
+                                    ac2.metric("Allocated", f"PKR {allocated:,.2f}")
+                                    ac3.metric("Spent / Remaining", f"PKR {spent_total:,.2f} / PKR {remaining:,.2f}")
+
+                                    can_manage = role in ("CEO", "Accountant")
+                                    edit_key = f"edit_advperson_{adv_id}"
+                                    if can_manage:
+                                        if ac4.button("✏️ Edit", key=f"btn_{edit_key}", use_container_width=True):
+                                            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
                                             st.rerun()
+
+                                    if can_manage and st.session_state.get(edit_key, False):
+                                        with st.form(f"form_{edit_key}"):
+                                            if advance_usernames:
+                                                default_idx = advance_usernames.index(adv["person_name"]) if adv["person_name"] in advance_usernames else 0
+                                                edit_person = st.selectbox("Advance Person (must have 'Advance' role)", advance_usernames, index=default_idx)
+                                            else:
+                                                st.warning("No users with the 'Advance' role exist yet. Create one under ⚙️ Settings first.")
+                                                edit_person = adv["person_name"]
+                                            edit_alloc = st.number_input("Allocated Amount (PKR)", min_value=0.0, step=500.0, value=allocated)
+                                            fs1, fs2 = st.columns(2)
+                                            save_adv = fs1.form_submit_button("💾 Save", type="primary", use_container_width=True)
+                                            cancel_adv = fs2.form_submit_button("✖️ Cancel", use_container_width=True)
+                                            if save_adv:
+                                                try:
+                                                    sb.table("advances").update({"person_name": edit_person, "allocated_amount": float(edit_alloc)}).eq("id", adv_id).execute()
+                                                    st.session_state[edit_key] = False
+                                                    confirm_and_rerun(f"✏️ Advance allocation updated for {edit_person}.", icon="💾")
+                                                except Exception as e:
+                                                    st.error(f"Cannot update advance: {e}")
+                                            if cancel_adv:
+                                                st.session_state[edit_key] = False
+                                                st.rerun()
+
+                                    is_owner = (role == "Advance" and current_user["username"] == adv["person_name"])
+                                    with st.expander(f"💵 Spending Log — {adv['person_name']} ({len(spends_df)} items)"):
+                                        if spends_df.empty:
+                                            st.caption("No spend items logged yet.")
+                                        else:
+                                            for _, sp in spends_df.iterrows():
+                                                sp_c1, sp_c2 = st.columns([4, 2])
+                                                sp_c1.markdown(f"🧾 {sp['item_name']}")
+                                                sp_c2.markdown(f"PKR {sp['amount_spent']:,.2f}")
+
+                                        if is_owner:
+                                            st.write("---")
+                                            with st.form(f"add_spend_{adv_id}", clear_on_submit=True):
+                                                sf1, sf2 = st.columns(2)
+                                                new_item = sf1.text_input("What did you spend it on?", key=f"item_{adv_id}")
+                                                new_spend_amt = sf2.number_input("Amount Spent (PKR)", min_value=0.0, step=100.0, key=f"spend_amt_{adv_id}")
+                                                if st.form_submit_button("➕ Log Spend", use_container_width=True):
+                                                    if new_item.strip() and new_spend_amt > 0:
+                                                        if new_spend_amt > remaining + 0.001:
+                                                            st.error(f"This exceeds your remaining balance of PKR {remaining:,.2f}.")
+                                                        else:
+                                                            sb.table("advance_spends").insert({"advance_id": adv_id, "item_name": new_item.strip(), "amount_spent": float(new_spend_amt)}).execute()
+                                                            confirm_and_rerun(f"💵 Logged spend '{new_item.strip()}' (PKR {new_spend_amt:,.2f}).", icon="🧾")
+                                                    else:
+                                                        st.error("Please enter a valid item and non-zero amount.")
+
+                        if role in ("CEO", "Accountant"):
+                            st.write("---")
+                            with st.expander("➕ Allocate New Staff Advance", expanded=False):
+                                if not advance_usernames:
+                                    st.warning("No users with the 'Advance' role exist yet. Create one under ⚙️ Settings first.")
+                                else:
+                                    with st.form(f"add_advance_{pid}", clear_on_submit=True):
+                                        af1, af2 = st.columns(2)
+                                        new_person = af1.selectbox("Advance Person (Advance role)", advance_usernames)
+                                        new_alloc = af2.number_input("Allocated Amount (PKR)", min_value=0.0, step=500.0)
+                                        if st.form_submit_button("➕ Allocate Advance", use_container_width=True):
+                                            if new_alloc > 0:
+                                                try:
+                                                    sb.table("advances").insert({"project_id": pid, "person_name": new_person, "allocated_amount": float(new_alloc)}).execute()
+                                                    confirm_and_rerun(f"💳 Advance allocation of PKR {new_alloc:,.2f} granted to {new_person}.", icon="💵")
+                                                except Exception as e:
+                                                    st.error(f"Cannot allocate advance (this person may already have one on this project): {e}")
+                                            else:
+                                                st.error("Please enter a non-zero amount.")
 
                     with t1: render_simple_form_tab(exp_data, "expense", "Expense")
                     with t2: render_simple_form_tab(inc_data, "income", "Income")
                     with t3: render_simple_form_tab(loan_data, "loan", "Loan")
-                    with t4: render_simple_form_tab(adv_data, "advance", "Staff Advance")
+                    with t4: render_advances_tab(pid)
 
                 if not is_read_only:
                     st.write("---")
@@ -563,30 +676,27 @@ elif menu == "🏢 Workspace":
                             if st.form_submit_button("Save Project Node"):
                                 if p_name.strip():
                                     try:
-                                        db.execute(
-                                            "INSERT INTO projects (company_id, name, description) VALUES (:cid, :n, :d)",
-                                            {"cid": c_id, "n": p_name.strip(), "d": p_desc.strip() if p_desc else None}
-                                        )
-                                        st.toast(f"✅ Project '{p_name.strip()}' Created Successfully!", icon="📁")
-                                        st.success(f"📁 Project '{p_name.strip()}' saved under corporate entity cluster.")
-                                        st.rerun()
+                                        sb.table("projects").insert({
+                                            "company_id": c_id, "name": p_name.strip(),
+                                            "description": p_desc.strip() if p_desc else None
+                                        }).execute()
+                                        confirm_and_rerun(f"📁 Project '{p_name.strip()}' created successfully.", icon="✅")
                                     except Exception as e:
                                         st.error(f"Cannot save project: {e}")
-        if not is_read_only:
-            with st.expander("➕ Add New Company Entity", expanded=False):
-                with st.form("add_company_form", clear_on_submit=True):
-                    row1_1, row1_2 = st.columns(2)
-                    c_name = row1_1.text_input("Company Name")
-                    c_site = row1_2.text_input("Location / Site")
-                    if st.form_submit_button("Save Company Entity", type="primary", use_container_width=True):
-                        if c_name.strip():
-                            try:
-                                db.execute("INSERT INTO companies (name, site) VALUES (:n, :s)", {"n": c_name.strip(), "s": c_site.strip() or None})
-                                st.toast(f"🏢 Company Corporate Entity '{c_name.strip()}' Provisioned!", icon="💼")
-                                st.success(f"💼 Corporate entity portfolio '{c_name.strip()}' successfully committed to registry files.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Cannot save company: {e}")
+
+    if not is_read_only:
+        with st.expander("➕ Add New Company Entity", expanded=False):
+            with st.form("add_company_form", clear_on_submit=True):
+                row1_1, row1_2 = st.columns(2)
+                c_name = row1_1.text_input("Company Name")
+                c_site = row1_2.text_input("Location / Site")
+                if st.form_submit_button("Save Company Entity", type="primary", use_container_width=True):
+                    if c_name.strip():
+                        try:
+                            sb.table("companies").insert({"name": c_name.strip(), "site": c_site.strip() or None}).execute()
+                            confirm_and_rerun(f"💼 Company '{c_name.strip()}' created successfully.", icon="🏢")
+                        except Exception as e:
+                            st.error(f"Cannot save company: {e}")
 # ==============================================================================
 # VIEW C: VOUCHER WORKFLOW
 # ==============================================================================
@@ -599,16 +709,33 @@ elif menu == "✍️ Voucher Portal":
     if "v_form_type" not in st.session_state: st.session_state["v_form_type"] = ""
     if "v_form_remarks" not in st.session_state: st.session_state["v_form_remarks"] = ""
 
-    vouchers_all = db.query(
-        """
-        SELECT v.id, v.title, v.amount, v.remarks, v.type, v.status, v.created_by, v.review_remarks, v.created_at, v.project_id,
-        c.name as company_name, p.name as project_name
-        FROM vouchers v
-        JOIN companies c ON v.company_id = c.id
-        LEFT JOIN projects p ON v.project_id = p.id
-        ORDER BY v.id DESC
-        """
-    )
+    # Fetch vouchers with related company and project names via Supabase foreign key joins
+    vouchers_raw = sb.table("vouchers").select("*, companies(name), projects(name)").order("id", desc=True).execute()
+    # Flatten the nested response into a flat DataFrame
+    voucher_rows = []
+    for v in (vouchers_raw.data or []):
+        flat = {k: v[k] for k in v if k not in ("companies", "projects")}
+        flat["company_name"] = v["companies"]["name"] if v.get("companies") else None
+        flat["project_name"] = v["projects"]["name"] if v.get("projects") else None
+        voucher_rows.append(flat)
+    vouchers_all = pd.DataFrame(voucher_rows) if voucher_rows else pd.DataFrame(columns=[
+        "id", "title", "amount", "remarks", "type", "status", "created_by",
+        "review_remarks", "created_at", "project_id", "company_id", "company_name", "project_name"
+    ])
+
+    def get_or_create_general_project(company_id):
+        """Vouchers submitted with no specific project still need a home so they show up
+        in that company's workspace and roll into its balance. We bucket them into an
+        auto-created 'General / Unassigned' project rather than leaving them orphaned."""
+        existing = sb.table("projects").select("id").eq("company_id", company_id).eq("name", "General / Unassigned").execute()
+        if existing.data:
+            return int(existing.data[0]["id"])
+        sb.table("projects").insert({
+            "company_id": company_id, "name": "General / Unassigned",
+            "description": "Auto-created bucket for approved vouchers not tied to a specific project."
+        }).execute()
+        created = sb.table("projects").select("id").eq("company_id", company_id).eq("name", "General / Unassigned").execute()
+        return int(created.data[0]["id"])
 
     def draw_voucher_ui_node(v_row, idx):
         shading = "alt" if idx % 2 == 0 else ""
@@ -653,25 +780,22 @@ elif menu == "✍️ Voucher Portal":
                 b1, b2, b3 = st.columns(3)
 
                 if b1.button("Approve Voucher Request", key=f"app_p_{r['id']}", type="primary"):
-                    check_status = db.query("SELECT status FROM vouchers WHERE id = :id", id=int(r['id']))
-                    if not check_status.empty and check_status.iloc[0]['status'] == 'Pending':
-                        db.execute("UPDATE vouchers SET status='Approved', review_remarks='Approved' WHERE id=:id", {"id": int(r['id'])})
-                        if r['project_id'] and not pd.isna(r['project_id']):
-                            db.execute(
-                                "INSERT INTO ledgers (project_id, type, title, amount, voucher_ref_id) VALUES (:pid, 'expense', :title, :amount, :vref)",
-                                {"pid": int(r['project_id']), "title": f"Voucher: {r['title']}", "amount": float(r['amount']), "vref": int(r['id'])}
-                            )
-                        st.toast("✅ Voucher Payout Approved & Ledger Pool Aggregated!", icon="💸")
-                        st.success("Voucher Approved and Ledger balance updated!")
-                        st.rerun()
+                    check_res = sb.table("vouchers").select("status").eq("id", int(r['id'])).execute()
+                    if check_res.data and check_res.data[0]['status'] == 'Pending':
+                        sb.table("vouchers").update({"status": "Approved", "review_remarks": "Approved"}).eq("id", int(r['id'])).execute()
+                        target_pid = int(r['project_id']) if r['project_id'] and not pd.isna(r['project_id']) else get_or_create_general_project(int(r['company_id']))
+                        sb.table("ledgers").insert({
+                            "project_id": target_pid, "type": "expense",
+                            "title": f"Voucher: {r['title']}", "amount": float(r['amount']),
+                            "voucher_ref_id": int(r['id'])
+                        }).execute()
+                        confirm_and_rerun(f"💸 Voucher '{r['title']}' approved — ledger updated.", icon="✅")
                 if b2.button("Decline Voucher Request", key=f"dec_p_{r['id']}"):
-                    db.execute("UPDATE vouchers SET status='Declined', review_remarks=:n WHERE id=:id", {"n": note or "Declined", "id": int(r['id'])})
-                    st.toast("🛑 Voucher Payout Request Declined Safely.", icon="❌")
-                    st.rerun()
+                    sb.table("vouchers").update({"status": "Declined", "review_remarks": note or "Declined"}).eq("id", int(r['id'])).execute()
+                    confirm_warn_and_rerun(f"🛑 Voucher '{r['title']}' declined.", icon="❌")
                 if b3.button("Flag To Be Discussed", key=f"tbd_p_{r['id']}", type="secondary"):
-                    db.execute("UPDATE vouchers SET status='To Be Discussed', review_remarks=:n WHERE id=:id", {"n": note or "Flagged for audit discussion", "id": int(r['id'])})
-                    st.toast("💬 Voucher Pipeline Item Flagged for Strategic Audit Discussion", icon="🔍")
-                    st.rerun()
+                    sb.table("vouchers").update({"status": "To Be Discussed", "review_remarks": note or "Flagged for audit discussion"}).eq("id", int(r['id'])).execute()
+                    confirm_and_rerun(f"💬 Voucher '{r['title']}' flagged for discussion.", icon="🔍")
 
         with t_disc:
             if d_v.empty: st.caption("No vouchers requiring discussion.")
@@ -680,23 +804,29 @@ elif menu == "✍️ Voucher Portal":
                 note = st.text_input("Review Remark / Direction", key=f"note_d_{r['id']}")
                 b1, b2 = st.columns(2)
                 if b1.button("Resolve & Approve", key=f"app_d_{r['id']}", type="primary"):
-                    check_status = db.query("SELECT status FROM vouchers WHERE id = :id", id=int(r['id']))
-                    if not check_status.empty and check_status.iloc[0]['status'] == 'To Be Discussed':
-                        db.execute("UPDATE vouchers SET status='Approved', review_remarks='Approved after strategic session' WHERE id=:id", {"id": int(r['id'])})
-                        if r['project_id'] and not pd.isna(r['project_id']):
-                            db.execute(
-                                "INSERT INTO ledgers (project_id, type, title, amount, voucher_ref_id) VALUES (:pid, 'expense', :title, :amount, :vref)",
-                                {"pid": int(r['project_id']), "title": f"Voucher: {r['title']}", "amount": float(r['amount']), "vref": int(r['id'])}
-                            )
-                        st.toast("✅ Voucher Payout Approved & Ledger Pool Aggregated!", icon="💸")
-                        st.rerun()
+                    check_res = sb.table("vouchers").select("status").eq("id", int(r['id'])).execute()
+                    if check_res.data and check_res.data[0]['status'] == 'To Be Discussed':
+                        sb.table("vouchers").update({"status": "Approved", "review_remarks": "Approved after strategic session"}).eq("id", int(r['id'])).execute()
+                        target_pid = int(r['project_id']) if r['project_id'] and not pd.isna(r['project_id']) else get_or_create_general_project(int(r['company_id']))
+                        sb.table("ledgers").insert({
+                            "project_id": target_pid, "type": "expense",
+                            "title": f"Voucher: {r['title']}", "amount": float(r['amount']),
+                            "voucher_ref_id": int(r['id'])
+                        }).execute()
+                        confirm_and_rerun(f"💸 Voucher '{r['title']}' approved — ledger updated.", icon="✅")
                 if b2.button("Resolve & Decline", key=f"dec_d_{r['id']}"):
-                    db.execute("UPDATE vouchers SET status='Declined', review_remarks=:n WHERE id=:id", {"n": note or "Declined", "id": int(r['id'])})
-                    st.toast("🛑 Voucher Payout Request Declined Safely.", icon="❌")
-                    st.rerun()
+                    sb.table("vouchers").update({"status": "Declined", "review_remarks": note or "Declined"}).eq("id", int(r['id'])).execute()
+                    confirm_warn_and_rerun(f"🛑 Voucher '{r['title']}' declined.", icon="❌")
+
+        with t_hist:
+            if h_v.empty:
+                st.caption("No historical (approved/declined) vouchers recorded yet.")
+            for idx, r in h_v.iterrows():
+                st.markdown(draw_voucher_ui_node(r, idx), unsafe_allow_html=True)
 
     else:
-        companies_df = db.query("SELECT * FROM companies ORDER BY name")
+        companies_res = sb.table("companies").select("*").order("name").execute()
+        companies_df = db.to_df(companies_res, columns=["id", "name", "site", "description"])
         if not companies_df.empty:
             st.subheader("Submit New Voucher Request")
 
@@ -704,7 +834,8 @@ elif menu == "✍️ Voucher Portal":
             target_company = v_filter_row[0].selectbox("Associated Company Entity", companies_df["name"])
             target_co_id = int(companies_df[companies_df["name"] == target_company].iloc[0]["id"])
 
-            projects_df = db.query("SELECT id, name FROM projects WHERE company_id = :cid ORDER BY name", cid=target_co_id)
+            projects_res = sb.table("projects").select("id, name").eq("company_id", target_co_id).order("name").execute()
+            projects_df = db.to_df(projects_res, columns=["id", "name"])
             project_options = ["— No Specific Project Linkage —"]
             project_id_map = {}
 
@@ -722,29 +853,24 @@ elif menu == "✍️ Voucher Portal":
                 st.session_state["v_form_amount"] = v_row2_c2.number_input("Requested Payout Amount (PKR)*", min_value=0.0, step=10.0, value=float(st.session_state["v_form_amount"]))
 
                 v_row3_c1, v_row3_c2 = st.columns(2)
-                st.session_state["v_form_type"] = v_row3_c1.text_input(" Type / Department (Optional)", value=st.session_state["v_form_type"])
+                st.session_state["v_form_type"] = v_row3_c1.text_input("Type / Department (Optional)", value=st.session_state["v_form_type"])
                 st.session_state["v_form_remarks"] = st.text_area("Remarks (Optional)", value=st.session_state["v_form_remarks"], height=68)
                 
                 if st.form_submit_button("File Voucher Entry", type="primary", use_container_width=True):
                     if st.session_state["v_form_title"].strip() and st.session_state["v_form_amount"] > 0:
-                        db.execute(
-                            """
-                            INSERT INTO vouchers (company_id, project_id, title, amount, remarks, type, created_by, status)
-                            VALUES (:cid, :pid, :t, :a, :rem, :type, :user, 'Pending')
-                            """,
-                            {
-                                "cid": target_co_id, "pid": chosen_project_id, "t": st.session_state["v_form_title"].strip(), "a": float(st.session_state["v_form_amount"]),
-                                "rem": st.session_state["v_form_remarks"].strip() or None, "type": st.session_state["v_form_type"].strip() or "General",
-                                "user": current_user["username"]
-                            }
-                        )
+                        sb.table("vouchers").insert({
+                            "company_id": target_co_id, "project_id": chosen_project_id,
+                            "title": st.session_state["v_form_title"].strip(),
+                            "amount": float(st.session_state["v_form_amount"]),
+                            "remarks": st.session_state["v_form_remarks"].strip() or None,
+                            "type": st.session_state["v_form_type"].strip() or "General",
+                            "created_by": current_user["username"], "status": "Pending"
+                        }).execute()
                         st.session_state["v_form_title"] = ""
                         st.session_state["v_form_amount"] = 0.0
                         st.session_state["v_form_type"] = ""
                         st.session_state["v_form_remarks"] = ""
-                        st.toast("📄 Voucher Payout Request Lodged into Pending Queue!", icon="📥")
-                        st.success("Voucher Request Lodged Successfully.")
-                        st.rerun()
+                        confirm_and_rerun("📄 Voucher request submitted and lodged into the pending queue.", icon="📥")
                     else:
                         st.error("Please enter a Valid Title and non-zero Amount.")
 
@@ -757,16 +883,48 @@ elif menu == "✍️ Voucher Portal":
         m_disc = my_v[my_v["status"] == "To Be Discussed"] if not my_v.empty else pd.DataFrame()
         m_hist = my_v[my_v["status"].isin(["Approved", "Declined"])] if not my_v.empty else pd.DataFrame()
 
+        def render_voucher_with_edit(r, idx):
+            st.markdown(draw_voucher_ui_node(r, idx), unsafe_allow_html=True)
+            can_edit = (r["created_by"] == current_user["username"]) and (str(r["status"]) in ("Pending", "To Be Discussed"))
+            if can_edit:
+                edit_key = f"edit_voucher_{int(r['id'])}"
+                if st.button("✏️ Edit Request", key=f"btn_{edit_key}", use_container_width=True):
+                    st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+                    st.rerun()
+
+                if st.session_state.get(edit_key, False):
+                    with st.form(f"form_{edit_key}"):
+                        ve1, ve2 = st.columns(2)
+                        ve_title = ve1.text_input("Voucher Title*", value=r["title"])
+                        ve_amount = ve2.number_input("Requested Payout Amount (PKR)*", min_value=0.0, step=10.0, value=float(r["amount"]))
+                        ve_remarks = st.text_area("Remarks", value=r["remarks"] if not pd.isna(r["remarks"]) else "", height=68)
+                        vs1, vs2 = st.columns(2)
+                        save_v = vs1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
+                        cancel_v = vs2.form_submit_button("✖️ Cancel", use_container_width=True)
+                        if save_v:
+                            if ve_title.strip() and ve_amount > 0:
+                                sb.table("vouchers").update({
+                                    "title": ve_title.strip(), "amount": float(ve_amount),
+                                    "remarks": ve_remarks.strip() or None
+                                }).eq("id", int(r["id"])).execute()
+                                st.session_state[edit_key] = False
+                                confirm_and_rerun(f"✏️ Voucher request updated to '{ve_title.strip()}'.", icon="💾")
+                            else:
+                                st.error("Please enter a valid title and non-zero amount.")
+                        if cancel_v:
+                            st.session_state[edit_key] = False
+                            st.rerun()
+
         st.write("---")
         st.subheader("User Tracking Registry Pipeline")
         ta1, ta2, ta3 = st.tabs([f"📌 Active Requests ({len(m_act)})", f"💬 Discussion Pending ({len(m_disc)})", f"🗂️ Filed History Ledger ({len(m_hist)})"])
 
         with ta1:
             if m_act.empty: st.caption("No active items.")
-            for idx, r in m_act.iterrows(): st.markdown(draw_voucher_ui_node(r, idx), unsafe_allow_html=True)
+            for idx, r in m_act.iterrows(): render_voucher_with_edit(r, idx)
         with ta2:
             if m_disc.empty: st.caption("No vouchers currently flagged for review discussion.")
-            for idx, r in m_disc.iterrows(): st.markdown(draw_voucher_ui_node(r, idx), unsafe_allow_html=True)
+            for idx, r in m_disc.iterrows(): render_voucher_with_edit(r, idx)
         with ta3:
             if m_hist.empty: st.caption("No absolute historical records recorded.")
             for idx, r in m_hist.iterrows(): st.markdown(draw_voucher_ui_node(r, idx), unsafe_allow_html=True)
@@ -790,21 +948,20 @@ elif menu == "⚙️ Settings" and role == "CEO":
             if st.form_submit_button("Create Account", type="primary"):
                 if acct_id.strip() and acct_pw.strip():
                     try:
-                        dash_flag = 1 if acct_role in ["Accountant", "CEO"] else 0
-                        db.execute(
-                            "INSERT INTO users (username, password, role, can_view_dashboard) VALUES (:u, :p, :r, :d)",
-                            {"u": acct_id.strip(), "p": acct_pw.strip(), "r": acct_role, "d": dash_flag}
-                        )
-                        st.toast(f"👤 Account User '{acct_id.strip()}' Created Successfully!", icon="🔑")
-                        st.success(f"Access Node Granted for '{acct_id.strip()}' as {acct_role}.")
-                        st.rerun()
+                        dash_flag = True if acct_role in ["Accountant", "CEO"] else False
+                        sb.table("users").insert({
+                            "username": acct_id.strip(), "password": acct_pw.strip(),
+                            "role": acct_role, "can_view_dashboard": dash_flag
+                        }).execute()
+                        confirm_and_rerun(f"👤 Account '{acct_id.strip()}' created as {acct_role}.", icon="🔑")
                     except Exception:
                         st.error(f"Cannot provision user: The ID key '{acct_id.strip()}' already exists.")
                 else:
                     st.error("Both fields are strictly mandatory.")
 
     with st_tabs[1]:
-        all_users_df = db.query("SELECT id, username, role FROM users ORDER BY username")
+        all_users_res = sb.table("users").select("id, username, role").order("username").execute()
+        all_users_df = db.to_df(all_users_res, columns=["id", "username", "role"])
 
         if not all_users_df.empty:
             st.markdown("**Modify or Revoke Workspace Permissions**")
@@ -828,23 +985,20 @@ elif menu == "⚙️ Settings" and role == "CEO":
                 new_assigned_role = st.selectbox("Select New Workspace Role", role_options, index=default_role_idx)
 
                 if st.form_submit_button("Save New Role Matrix"):
-                    dash_flag = 1 if new_assigned_role in ["Accountant", "CEO"] else 0
-                    db.execute(
-                        "UPDATE users SET role = :r, can_view_dashboard = :d WHERE id = :id",
-                        {"r": new_assigned_role, "d": dash_flag, "id": target_user_id}
-                    )
-                    st.toast(f"🔄 Account Role Updated for {selected_username}!", icon="🛡️")
-                    st.success(f"Role updated successfully for '{selected_username}' to {new_assigned_role}.")
-                    st.rerun()
-
-            with st.form(f"change_pass_form_{target_user_id}", clear_on_submit=True):
-                st.markdown("🔒 **Administrative Security Key Reset**")
-                new_pass = st.text_input("Assign New Security Key / Password", type="password")
+                    dash_flag = True if new_assigned_role in ["Accountant", "CEO"] else False
+                    sb.table("users").update({
+                        "role": new_assigned_role, "can_view_dashboard": dash_flag
+                    }).eq("id", target_user_id).execute()
+                    confirm_and_rerun(f"🛡️ Role updated for '{selected_username}' to {new_assigned_role}.", icon="🔄")
+            
+                with st.form(f"change_pass_form_{target_user_id}", clear_on_submit=True):
+                    st.markdown("🔒 **Administrative Security Key Reset**")
+                    new_pass = st.text_input("Assign New Security Key / Password", type="password")
 
                 if st.form_submit_button("Force Overwrite Password"):
                     if new_pass.strip():
-                        db.execute("UPDATE users SET password = :p WHERE id = :id", {"p": new_pass.strip(), "id": target_user_id})
-                        st.success(f"Password updated for user '{selected_username}' successfully.")
+                        sb.table("users").update({"password": new_pass.strip()}).eq("id", target_user_id).execute()
+                        confirm_and_rerun(f"🔒 Password updated for user '{selected_username}'.", icon="🔑")
                     else:
                         st.error("Password string empty.")
 
@@ -853,9 +1007,7 @@ elif menu == "⚙️ Settings" and role == "CEO":
                 if selected_username == current_user["username"]:
                     st.error("Operation Denied: You cannot delete your own session account identity while logged in.")
                 else:
-                    db.execute("DELETE FROM users WHERE id = :id", {"id": target_user_id})
-                    st.toast(f"❌ Account Workspace Access Revoked for '{selected_username}'", icon="🚨")
-                    st.warning(f"User account node '{selected_username}' has been dropped from database registry files.")
-                    st.rerun()
+                    sb.table("users").delete().eq("id", target_user_id).execute()
+                    confirm_warn_and_rerun(f"🚨 User '{selected_username}' has been removed.", icon="❌")
         else:
             st.caption("No registered member accounts loaded.")
