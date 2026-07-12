@@ -85,21 +85,19 @@ def _safe_float(value):
     return float(value)
 
 def confirm_and_rerun(message, icon="✅"):
-    """Shows a persistent success confirmation for at least 3 seconds, then reruns."""
+    """Shows a toast confirmation, clears cached reads (so the rerun picks up
+    the change we just made), then reruns."""
     st.toast(message, icon=icon)
-    placeholder = st.empty()
-    placeholder.success(message, icon=icon)
-    time.sleep(3)
+    st.cache_data.clear()
     st.rerun()
 
 def confirm_warn_and_rerun(message, icon="⚠️"):
     """Same as confirm_and_rerun but for warnings/declines/removals."""
     st.toast(message, icon=icon)
-    placeholder = st.empty()
-    placeholder.warning(message, icon=icon)
-    time.sleep(3)
+    st.cache_data.clear()
     st.rerun()
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_project_balance(project_id):
     ledger_res = sb.table("ledgers").select("type, amount").eq("project_id", project_id).execute()
     ledger_df = db.to_df(ledger_res, columns=["type", "amount"])
@@ -135,22 +133,41 @@ def get_project_balance(project_id):
         "advances_remaining": unspent_cash_returned, "balance": balance, "profit": profit
     }
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_company_balance(company_id):
+    """Same result as summing get_project_balance() over every project in the
+    company, but fetches each table once for the whole company (via .in_())
+    instead of once per project — avoids the 4-queries-per-project N+1."""
     project_res = sb.table("projects").select("id").eq("company_id", company_id).execute()
     project_df = db.to_df(project_res, columns=["id"])
     if project_df.empty:
         return {"income": 0.0, "expense": 0.0, "loans": 0.0, "advances_allocated": 0.0, "advances_spent": 0.0, "advances_remaining": 0.0, "balance": 0.0, "profit": 0.0}
 
-    pids_list = project_df["id"].tolist()
-    income, expense, loans, total_allocated, total_spent = 0.0, 0.0, 0.0, 0.0, 0.0
+    pids_list = [int(x) for x in project_df["id"].tolist()]
 
-    for pid in pids_list:
-        p_metrics = get_project_balance(pid)
-        income += p_metrics["income"]
-        expense += p_metrics["expense"]
-        loans += p_metrics["loans"]
-        total_allocated += p_metrics["advances_allocated"]
-        total_spent += p_metrics["advances_spent"]
+    ledger_res = sb.table("ledgers").select("type, amount").in_("project_id", pids_list).execute()
+    ledger_df = db.to_df(ledger_res, columns=["type", "amount"])
+    if not ledger_df.empty:
+        ledger_df["amount"] = ledger_df["amount"].fillna(0)
+    income = ledger_df[ledger_df["type"] == "income"]["amount"].sum() if not ledger_df.empty else 0.0
+    expense = ledger_df[ledger_df["type"] == "expense"]["amount"].sum() if not ledger_df.empty else 0.0
+    loans = ledger_df[ledger_df["type"] == "loan"]["amount"].sum() if not ledger_df.empty else 0.0
+
+    v_res = sb.table("vouchers").select("amount").in_("project_id", pids_list).eq("status", "Approved").execute()
+    approved_vouchers_sum = sum(_safe_float(r["amount"]) for r in v_res.data) if v_res.data else 0.0
+    expense += approved_vouchers_sum  # matches get_project_balance's "expense" (ledger expense + approved vouchers)
+
+    adv_res = sb.table("advances").select("id, allocated_amount").in_("project_id", pids_list).execute()
+    adv_df = db.to_df(adv_res, columns=["id", "allocated_amount"])
+    if not adv_df.empty:
+        adv_df["allocated_amount"] = adv_df["allocated_amount"].fillna(0)
+    total_allocated = adv_df["allocated_amount"].sum() if not adv_df.empty else 0.0
+    total_spent = 0.0
+
+    if not adv_df.empty:
+        a_ids = [int(x) for x in adv_df["id"].tolist()]
+        spends_res = sb.table("advance_spends").select("amount_spent").in_("advance_id", a_ids).execute()
+        total_spent = sum(_safe_float(r["amount_spent"]) for r in spends_res.data) if spends_res.data else 0.0
 
     unspent_cash_returned = total_allocated - total_spent
     return {
@@ -159,6 +176,42 @@ def get_company_balance(company_id):
         "balance": income + loans - expense - total_allocated + unspent_cash_returned,
         "profit": income - expense
     }
+
+# --- Cached read-only lookups used at multiple call sites / on every rerun.
+# Cache is cleared inside confirm_and_rerun()/confirm_warn_and_rerun(), i.e.
+# right after any insert/update/delete in the app, so this never serves stale
+# data after a change — it only saves re-fetching identical data on reruns
+# that don't touch the database (opening a tab, toggling an edit form, etc).
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_all_companies():
+    res = sb.table("companies").select("*").order("name").execute()
+    return db.to_df(res, columns=["id", "name", "site", "description"])
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_projects_full(company_id):
+    res = sb.table("projects").select("id, name, description").eq("company_id", company_id).order("name").execute()
+    return db.to_df(res, columns=["id", "name", "description"])
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_projects_names(company_id):
+    res = sb.table("projects").select("id, name").eq("company_id", company_id).order("name").execute()
+    return db.to_df(res, columns=["id", "name"])
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_users_by_role(role_name):
+    res = sb.table("users").select("username").eq("role", role_name).order("username").execute()
+    return [r["username"] for r in res.data] if res.data else []
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_all_users_summary():
+    res = sb.table("users").select("id, username, role").order("username").execute()
+    return db.to_df(res, columns=["id", "username", "role"])
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_all_vouchers_raw():
+    res = sb.table("vouchers").select("*, companies(name), projects(name)").order("id", desc=True).execute()
+    return res.data or []
 
 # ==============================================================================
 # 2. DESIGN & STYLING ASSETS (High Density Professional Overrides)
@@ -368,8 +421,7 @@ elif menu == "🏢 Workspace":
     if is_read_only:
         st.info("👁️ Read-Only Mode: View access granted. Log modifications are restricted.")
 
-    companies_res = sb.table("companies").select("*").order("name").execute()
-    companies_df = db.to_df(companies_res, columns=["id", "name", "site", "description"])
+    companies_df = get_all_companies()
 
     st.subheader("🏢 Corporate Portfolios")
 
@@ -430,8 +482,7 @@ elif menu == "🏢 Workspace":
                 st.write("---")
                 st.markdown(f"### 📁 Active Projects Node Panel — {r['name']}")
 
-                projects_res = sb.table("projects").select("id, name, description").eq("company_id", c_id).order("name").execute()
-                projects_df = db.to_df(projects_res, columns=["id", "name", "description"])
+                projects_df = get_projects_full(c_id)
 
                 if projects_df.empty:
                     st.caption("No registered projects found under this entity structure.")
@@ -566,8 +617,7 @@ elif menu == "🏢 Workspace":
 
                     def render_advances_tab(pid):
                         # 1. Fetch available advance personas for the selection dropdown
-                        advance_role_res = sb.table("users").select("username").eq("role", "Advance").order("username").execute()
-                        advance_usernames = [r["username"] for r in advance_role_res.data] if advance_role_res.data else []
+                        advance_usernames = get_users_by_role("Advance")
 
                         # 2. Fetch current active allocations
                         adv_res = sb.table("advances").select("id, person_name, allocated_amount").eq("project_id", pid).order("person_name").execute()
@@ -740,10 +790,10 @@ elif menu == "✍️ Voucher Portal":
     if "v_form_remarks" not in st.session_state: st.session_state["v_form_remarks"] = ""
 
     # Fetch vouchers with related company and project names via Supabase foreign key joins
-    vouchers_raw = sb.table("vouchers").select("*, companies(name), projects(name)").order("id", desc=True).execute()
+    vouchers_raw = get_all_vouchers_raw()
     # Flatten the nested response into a flat DataFrame
     voucher_rows = []
-    for v in (vouchers_raw.data or []):
+    for v in vouchers_raw:
         flat = {k: v[k] for k in v if k not in ("companies", "projects")}
         flat["company_name"] = v["companies"]["name"] if v.get("companies") else None
         flat["project_name"] = v["projects"]["name"] if v.get("projects") else None
@@ -855,8 +905,7 @@ elif menu == "✍️ Voucher Portal":
                 st.markdown(draw_voucher_ui_node(r, idx), unsafe_allow_html=True)
 
     else:
-        companies_res = sb.table("companies").select("*").order("name").execute()
-        companies_df = db.to_df(companies_res, columns=["id", "name", "site", "description"])
+        companies_df = get_all_companies()
         if not companies_df.empty:
             st.subheader("Submit New Voucher Request")
 
@@ -864,8 +913,7 @@ elif menu == "✍️ Voucher Portal":
             target_company = v_filter_row[0].selectbox("Associated Company Entity", companies_df["name"])
             target_co_id = int(companies_df[companies_df["name"] == target_company].iloc[0]["id"])
 
-            projects_res = sb.table("projects").select("id, name").eq("company_id", target_co_id).order("name").execute()
-            projects_df = db.to_df(projects_res, columns=["id", "name"])
+            projects_df = get_projects_names(target_co_id)
             project_options = ["— No Specific Project Linkage —"]
             project_id_map = {}
 
@@ -990,8 +1038,7 @@ elif menu == "⚙️ Settings" and role == "CEO":
                     st.error("Both fields are strictly mandatory.")
 
     with st_tabs[1]:
-        all_users_res = sb.table("users").select("id, username, role").order("username").execute()
-        all_users_df = db.to_df(all_users_res, columns=["id", "username", "role"])
+        all_users_df = get_all_users_summary()
 
         if not all_users_df.empty:
             st.markdown("**Modify or Revoke Workspace Permissions**")
