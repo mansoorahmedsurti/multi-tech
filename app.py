@@ -273,11 +273,6 @@ if "auth_mode" not in st.session_state:
 
 if st.session_state["user"] is None:
     if st.session_state["auth_mode"] == "login":
-        logo_path = "logo.jpeg" if os.path.exists("logo.jpeg") else ("logo.jpg" if os.path.exists("logo.jpg") else None)
-        if logo_path:
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                st.image(logo_path, use_container_width=True)
         st.markdown("<h2 style='text-align: center;'>Multi Tech Engineering Group Sign In</h2>", unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1, 1.5, 1])
         with col2:
