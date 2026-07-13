@@ -292,9 +292,9 @@ if st.session_state["user"] is None:
                     else:
                         st.error("Invalid credentials.")
 
-            if st.button("Forgot Password?", use_container_width=True):
-                st.session_state["auth_mode"] = "forgot"
-                st.rerun()
+            #  if st.button("Forgot Password?", use_container_width=True):
+            #      st.session_state["auth_mode"] = "forgot"
+            #      st.rerun()
 
     elif st.session_state["auth_mode"] == "forgot":
         st.markdown("<div style='margin-top: 3.5rem;'></div>", unsafe_allow_html=True)
