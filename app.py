@@ -5,11 +5,20 @@ import datetime
 import random
 import string
 import time
+import os
+import shutil
 from supabase import create_client
 
+# Ensure logo.jpeg exists if logo.jpg is present
+if os.path.exists("logo.jpg") and not os.path.exists("logo.jpeg"):
+    try:
+        shutil.copy("logo.jpg", "logo.jpeg")
+    except Exception:
+        pass
+
 st.set_page_config(
-    page_title="FinLedger Pro",
-    page_icon="💎",
+    page_title="Multi Tech Engineering Group",
+    page_icon="logo.jpeg" if os.path.exists("logo.jpeg") else "⚙️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -247,7 +256,10 @@ border-left: 5px solid #0ea5e9 !important;
 </style>
 """, unsafe_allow_html=True)
 
-st.sidebar.markdown("### 💎 FinLedger Pro")
+logo_path = "logo.jpeg" if os.path.exists("logo.jpeg") else ("logo.jpg" if os.path.exists("logo.jpg") else None)
+if logo_path:
+    st.sidebar.image(logo_path, use_container_width=True)
+st.sidebar.markdown("### MTEG")
 st.sidebar.success("Live Supabase Synced", icon="⚡")
 
 # ==============================================================================
@@ -261,7 +273,12 @@ if "auth_mode" not in st.session_state:
 
 if st.session_state["user"] is None:
     if st.session_state["auth_mode"] == "login":
-        st.markdown("<h2 style='text-align: center;'>💎 FinLedger Pro Sign In</h2>", unsafe_allow_html=True)
+        logo_path = "logo.jpeg" if os.path.exists("logo.jpeg") else ("logo.jpg" if os.path.exists("logo.jpg") else None)
+        if logo_path:
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.image(logo_path, use_container_width=True)
+        st.markdown("<h2 style='text-align: center;'>Multi Tech Engineering Group Sign In</h2>", unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1, 1.5, 1])
         with col2:
             with st.form("login_form"):
