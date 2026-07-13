@@ -273,6 +273,7 @@ if "auth_mode" not in st.session_state:
 
 if st.session_state["user"] is None:
     if st.session_state["auth_mode"] == "login":
+        st.markdown("<div style='margin-top: 3.5rem;'></div>", unsafe_allow_html=True)
         st.markdown("<h2 style='text-align: center;'>Multi Tech Engineering Group Sign In</h2>", unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1, 1.5, 1])
         with col2:
@@ -296,6 +297,7 @@ if st.session_state["user"] is None:
                 st.rerun()
 
     elif st.session_state["auth_mode"] == "forgot":
+        st.markdown("<div style='margin-top: 3.5rem;'></div>", unsafe_allow_html=True)
         st.markdown("<h2 style='text-align: center;'>🔑 Reset Workspace Access</h2>", unsafe_allow_html=True)
         col1, col2, col3 = st.columns([1, 1.5, 1])
         with col2:
