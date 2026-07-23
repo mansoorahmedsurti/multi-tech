@@ -71,7 +71,7 @@ class DBConnection:
 
     def to_df(self, response, columns=None):
         """Convert a Supabase response to a pandas DataFrame."""
-        if response.data:
+        if response and hasattr(response, 'data') and response.data:
             return pd.DataFrame(response.data)
         return pd.DataFrame(columns=columns or [])
 
@@ -85,8 +85,23 @@ db = get_db()
 sb = db.client  # shorthand for the supabase client
 
 # ==============================================================================
-# HELPER MATHEMATICAL COEFFICIENTS
+# OPTIMIZED GLOBAL CACHED READS (IN-MEMORY BULK PROCESSING)
 # ==============================================================================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_all_table_data():
+    """Fetch core tables once to perform lightning-fast in-memory filtering."""
+    ledgers_res = sb.table("ledgers").select("*").execute()
+    vouchers_res = sb.table("vouchers").select("*").execute()
+    advances_res = sb.table("advances").select("*").execute()
+    spends_res = sb.table("advance_spends").select("*").execute()
+
+    return {
+        "ledgers": db.to_df(ledgers_res, columns=["id", "project_id", "type", "title", "cheque_number", "voucher_ref_id", "amount", "created_at"]),
+        "vouchers": db.to_df(vouchers_res, columns=["id", "company_id", "project_id", "title", "amount", "remarks", "type", "created_by", "review_remarks", "status", "created_at"]),
+        "advances": db.to_df(advances_res, columns=["id", "project_id", "person_name", "allocated_amount"]),
+        "spends": db.to_df(spends_res, columns=["id", "advance_id", "item_name", "amount_spent", "created_at"])
+    }
 
 def _safe_float(value):
     if value is None or pd.isna(value):
@@ -94,8 +109,7 @@ def _safe_float(value):
     return float(value)
 
 def confirm_and_rerun(message, icon="✅"):
-    """Shows a toast confirmation, clears cached reads (so the rerun picks up
-    the change we just made), then reruns."""
+    """Shows a toast confirmation, clears cached reads, then reruns."""
     st.toast(message, icon=icon)
     st.cache_data.clear()
     st.rerun()
@@ -106,30 +120,36 @@ def confirm_warn_and_rerun(message, icon="⚠️"):
     st.cache_data.clear()
     st.rerun()
 
-@st.cache_data(ttl=300, show_spinner=False)
 def get_project_balance(project_id):
-    ledger_res = sb.table("ledgers").select("type, amount").eq("project_id", project_id).execute()
-    ledger_df = db.to_df(ledger_res, columns=["type", "amount"])
-    if not ledger_df.empty:
-        ledger_df["amount"] = ledger_df["amount"].fillna(0)
-    income = ledger_df[ledger_df["type"] == "income"]["amount"].sum() if not ledger_df.empty else 0.0
-    expense = ledger_df[ledger_df["type"] == "expense"]["amount"].sum() if not ledger_df.empty else 0.0
-    loans = ledger_df[ledger_df["type"] == "loan"]["amount"].sum() if not ledger_df.empty else 0.0
+    tables = fetch_all_table_data()
+    
+    # 1. Ledgers
+    l_df = tables["ledgers"]
+    proj_ledgers = l_df[l_df["project_id"] == project_id] if not l_df.empty else pd.DataFrame()
+    income = proj_ledgers[proj_ledgers["type"] == "income"]["amount"].apply(_safe_float).sum() if not proj_ledgers.empty else 0.0
+    expense = proj_ledgers[proj_ledgers["type"] == "expense"]["amount"].apply(_safe_float).sum() if not proj_ledgers.empty else 0.0
+    loans = proj_ledgers[proj_ledgers["type"] == "loan"]["amount"].apply(_safe_float).sum() if not proj_ledgers.empty else 0.0
 
-    v_res = sb.table("vouchers").select("amount").eq("project_id", project_id).eq("status", "Approved").execute()
-    approved_vouchers_sum = sum(_safe_float(r["amount"]) for r in v_res.data) if v_res.data else 0.0
+    # 2. Approved Vouchers
+    v_df = tables["vouchers"]
+    if not v_df.empty:
+        app_v = v_df[(v_df["project_id"] == project_id) & (v_df["status"] == "Approved")]
+        approved_vouchers_sum = app_v["amount"].apply(_safe_float).sum()
+    else:
+        approved_vouchers_sum = 0.0
 
-    adv_res = sb.table("advances").select("id, allocated_amount").eq("project_id", project_id).execute()
-    adv_df = db.to_df(adv_res, columns=["id", "allocated_amount"])
-    if not adv_df.empty:
-        adv_df["allocated_amount"] = adv_df["allocated_amount"].fillna(0)
-    total_allocated = adv_df["allocated_amount"].sum() if not adv_df.empty else 0.0
+    # 3. Advances & Spends
+    adv_df = tables["advances"]
+    sp_df = tables["spends"]
+    
+    proj_adv = adv_df[adv_df["project_id"] == project_id] if not adv_df.empty else pd.DataFrame()
+    total_allocated = proj_adv["allocated_amount"].apply(_safe_float).sum() if not proj_adv.empty else 0.0
     total_spent = 0.0
 
-    if not adv_df.empty:
-        a_ids = [int(x) for x in adv_df["id"].tolist()]
-        spends_res = sb.table("advance_spends").select("amount_spent").in_("advance_id", a_ids).execute()
-        total_spent = sum(_safe_float(r["amount_spent"]) for r in spends_res.data) if spends_res.data else 0.0
+    if not proj_adv.empty and not sp_df.empty:
+        a_ids = proj_adv["id"].astype(int).tolist()
+        matching_spends = sp_df[sp_df["advance_id"].isin(a_ids)]
+        total_spent = matching_spends["amount_spent"].apply(_safe_float).sum()
 
     unspent_cash_returned = total_allocated - total_spent
 
@@ -142,43 +162,46 @@ def get_project_balance(project_id):
         "advances_remaining": unspent_cash_returned, "balance": balance, "profit": profit
     }
 
-@st.cache_data(ttl=300, show_spinner=False)
 def get_company_balance(company_id):
-    """Same result as summing get_project_balance() over every project in the
-    company, but fetches each table once for the whole company (via .in_())
-    instead of once per project — avoids the 4-queries-per-project N+1."""
-    project_res = sb.table("projects").select("id").eq("company_id", company_id).execute()
-    project_df = db.to_df(project_res, columns=["id"])
-    if project_df.empty:
+    projects_df = get_projects_full(company_id)
+    if projects_df.empty:
         return {"income": 0.0, "expense": 0.0, "loans": 0.0, "advances_allocated": 0.0, "advances_spent": 0.0, "advances_remaining": 0.0, "balance": 0.0, "profit": 0.0}
 
-    pids_list = [int(x) for x in project_df["id"].tolist()]
+    pids_list = projects_df["id"].astype(int).tolist()
+    tables = fetch_all_table_data()
 
-    ledger_res = sb.table("ledgers").select("type, amount").in_("project_id", pids_list).execute()
-    ledger_df = db.to_df(ledger_res, columns=["type", "amount"])
-    if not ledger_df.empty:
-        ledger_df["amount"] = ledger_df["amount"].fillna(0)
-    income = ledger_df[ledger_df["type"] == "income"]["amount"].sum() if not ledger_df.empty else 0.0
-    expense = ledger_df[ledger_df["type"] == "expense"]["amount"].sum() if not ledger_df.empty else 0.0
-    loans = ledger_df[ledger_df["type"] == "loan"]["amount"].sum() if not ledger_df.empty else 0.0
+    # Ledgers
+    l_df = tables["ledgers"]
+    comp_ledgers = l_df[l_df["project_id"].isin(pids_list)] if not l_df.empty else pd.DataFrame()
+    income = comp_ledgers[comp_ledgers["type"] == "income"]["amount"].apply(_safe_float).sum() if not comp_ledgers.empty else 0.0
+    expense = comp_ledgers[comp_ledgers["type"] == "expense"]["amount"].apply(_safe_float).sum() if not comp_ledgers.empty else 0.0
+    loans = comp_ledgers[comp_ledgers["type"] == "loan"]["amount"].apply(_safe_float).sum() if not comp_ledgers.empty else 0.0
 
-    v_res = sb.table("vouchers").select("amount").in_("project_id", pids_list).eq("status", "Approved").execute()
-    approved_vouchers_sum = sum(_safe_float(r["amount"]) for r in v_res.data) if v_res.data else 0.0
-    expense += approved_vouchers_sum  # matches get_project_balance's "expense" (ledger expense + approved vouchers)
+    # Approved Vouchers
+    v_df = tables["vouchers"]
+    if not v_df.empty:
+        app_v = v_df[(v_df["project_id"].isin(pids_list)) & (v_df["status"] == "Approved")]
+        approved_vouchers_sum = app_v["amount"].apply(_safe_float).sum()
+    else:
+        approved_vouchers_sum = 0.0
+    
+    expense += approved_vouchers_sum
 
-    adv_res = sb.table("advances").select("id, allocated_amount").in_("project_id", pids_list).execute()
-    adv_df = db.to_df(adv_res, columns=["id", "allocated_amount"])
-    if not adv_df.empty:
-        adv_df["allocated_amount"] = adv_df["allocated_amount"].fillna(0)
-    total_allocated = adv_df["allocated_amount"].sum() if not adv_df.empty else 0.0
+    # Advances & Spends
+    adv_df = tables["advances"]
+    sp_df = tables["spends"]
+
+    comp_adv = adv_df[adv_df["project_id"].isin(pids_list)] if not adv_df.empty else pd.DataFrame()
+    total_allocated = comp_adv["allocated_amount"].apply(_safe_float).sum() if not comp_adv.empty else 0.0
     total_spent = 0.0
 
-    if not adv_df.empty:
-        a_ids = [int(x) for x in adv_df["id"].tolist()]
-        spends_res = sb.table("advance_spends").select("amount_spent").in_("advance_id", a_ids).execute()
-        total_spent = sum(_safe_float(r["amount_spent"]) for r in spends_res.data) if spends_res.data else 0.0
+    if not comp_adv.empty and not sp_df.empty:
+        a_ids = comp_adv["id"].astype(int).tolist()
+        matching_spends = sp_df[sp_df["advance_id"].isin(a_ids)]
+        total_spent = matching_spends["amount_spent"].apply(_safe_float).sum()
 
     unspent_cash_returned = total_allocated - total_spent
+
     return {
         "income": income, "expense": expense, "loans": loans,
         "advances_allocated": total_allocated, "advances_spent": total_spent, "advances_remaining": unspent_cash_returned,
@@ -186,12 +209,7 @@ def get_company_balance(company_id):
         "profit": income - expense
     }
 
-# --- Cached read-only lookups used at multiple call sites / on every rerun.
-# Cache is cleared inside confirm_and_rerun()/confirm_warn_and_rerun(), i.e.
-# right after any insert/update/delete in the app, so this never serves stale
-# data after a change — it only saves re-fetching identical data on reruns
-# that don't touch the database (opening a tab, toggling an edit form, etc).
-
+# --- Cached read-only lookups used at multiple call sites
 @st.cache_data(ttl=300, show_spinner=False)
 def get_all_companies():
     res = sb.table("companies").select("*").order("name").execute()
@@ -371,10 +389,10 @@ if menu == "📊 Dashboard":
     if time_filter == "Last 30 Days": date_limit = today - datetime.timedelta(days=30)
     elif time_filter == "This Month": date_limit = today.replace(day=1)
 
-    ledgers_res = sb.table("ledgers").select("type, amount, created_at").execute()
-    ledgers_df = db.to_df(ledgers_res, columns=["type", "amount", "created_at"])
-    advances_res = sb.table("advances").select("id, allocated_amount").execute()
-    advances_df = db.to_df(advances_res, columns=["id", "allocated_amount"])
+    tables = fetch_all_table_data()
+    ledgers_df = tables["ledgers"].copy()
+    advances_df = tables["advances"].copy()
+    spends_df = tables["spends"].copy()
 
     if ledgers_df.empty:
         overall_bal, total_loans, net_profit, unspent_advances = 0.0, 0.0, 0.0, 0.0
@@ -383,16 +401,12 @@ if menu == "📊 Dashboard":
         ledgers_df["created_at"] = pd.to_datetime(ledgers_df["created_at"]).dt.date
         if date_limit: ledgers_df = ledgers_df[ledgers_df["created_at"] >= date_limit]
 
-        inc = ledgers_df[ledgers_df["type"] == "income"]["amount"].sum()
-        exp = ledgers_df[ledgers_df["type"] == "expense"]["amount"].sum()
-        loans = ledgers_df[ledgers_df["type"] == "loan"]["amount"].sum()
+        inc = ledgers_df[ledgers_df["type"] == "income"]["amount"].apply(_safe_float).sum()
+        exp = ledgers_df[ledgers_df["type"] == "expense"]["amount"].apply(_safe_float).sum()
+        loans = ledgers_df[ledgers_df["type"] == "loan"]["amount"].apply(_safe_float).sum()
 
-        alloc_adv = advances_df["allocated_amount"].sum() if not advances_df.empty else 0.0
-        spent_adv = 0.0
-        if not advances_df.empty:
-            a_ids = [int(x) for x in advances_df["id"].tolist()]
-            spends_res = sb.table("advance_spends").select("amount_spent").in_("advance_id", a_ids).execute()
-            if spends_res.data: spent_adv = sum(_safe_float(r["amount_spent"]) for r in spends_res.data)
+        alloc_adv = advances_df["allocated_amount"].apply(_safe_float).sum() if not advances_df.empty else 0.0
+        spent_adv = spends_df["amount_spent"].apply(_safe_float).sum() if not spends_df.empty else 0.0
 
         unspent_advances = alloc_adv - spent_adv
         overall_bal = inc + loans - exp - alloc_adv + unspent_advances
@@ -436,6 +450,7 @@ elif menu == "🏢 Workspace":
         st.info("👁️ Read-Only Mode: View access granted. Log modifications are restricted.")
 
     companies_df = get_all_companies()
+    tables = fetch_all_table_data()
 
     st.subheader("🏢 Corporate Portfolios")
 
@@ -555,12 +570,13 @@ elif menu == "🏢 Workspace":
 
                     st.write("---")
 
-                    exp_res = sb.table("ledgers").select("id, title, amount, cheque_number").eq("project_id", pid).eq("type", "expense").execute()
-                    exp_data = db.to_df(exp_res, columns=["id", "title", "amount", "cheque_number"])
-                    inc_res = sb.table("ledgers").select("id, title, amount, cheque_number").eq("project_id", pid).eq("type", "income").execute()
-                    inc_data = db.to_df(inc_res, columns=["id", "title", "amount", "cheque_number"])
-                    loan_res = sb.table("ledgers").select("id, title, amount, cheque_number").eq("project_id", pid).eq("type", "loan").execute()
-                    loan_data = db.to_df(loan_res, columns=["id", "title", "amount", "cheque_number"])
+                    # Fast In-Memory Ledgers Extraction
+                    l_all = tables["ledgers"]
+                    p_ledgers = l_all[l_all["project_id"] == pid] if not l_all.empty else pd.DataFrame()
+
+                    exp_data = p_ledgers[p_ledgers["type"] == "expense"][["id", "title", "amount", "cheque_number"]] if not p_ledgers.empty else pd.DataFrame()
+                    inc_data = p_ledgers[p_ledgers["type"] == "income"][["id", "title", "amount", "cheque_number"]] if not p_ledgers.empty else pd.DataFrame()
+                    loan_data = p_ledgers[p_ledgers["type"] == "loan"][["id", "title", "amount", "cheque_number"]] if not p_ledgers.empty else pd.DataFrame()
 
                     t1, t2, t3, t4 = st.tabs(["🔴 Expenses", "🟢 Income", "🔵 Loans", "💳 Staff Advances"])
 
@@ -633,17 +649,17 @@ elif menu == "🏢 Workspace":
                         # 1. Fetch available advance personas for the selection dropdown
                         advance_usernames = get_users_by_role("Advance")
 
-                        # 2. Fetch current active allocations
-                        adv_res = sb.table("advances").select("id, person_name, allocated_amount").eq("project_id", pid).order("person_name").execute()
-                        adv_rows = db.to_df(adv_res, columns=["id", "person_name", "allocated_amount"])
+                        # 2. Extract current active allocations in-memory
+                        a_all = tables["advances"]
+                        adv_rows = a_all[a_all["project_id"] == pid].sort_values("person_name") if not a_all.empty else pd.DataFrame()
 
                         if adv_rows.empty:
                             st.caption("No staff advances allocated for this project yet.")
                         else:
+                            s_all = tables["spends"]
                             for _, adv in adv_rows.iterrows():
                                 adv_id = int(adv["id"])
-                                spends_res = sb.table("advance_spends").select("id, item_name, amount_spent").eq("advance_id", adv_id).order("id", desc=True).execute()
-                                spends_df = db.to_df(spends_res, columns=["id", "item_name", "amount_spent"])
+                                spends_df = s_all[s_all["advance_id"] == adv_id].sort_values("id", ascending=False) if not s_all.empty else pd.DataFrame()
                                 spent_total = _safe_float(spends_df["amount_spent"].sum()) if not spends_df.empty else 0.0
                                 allocated = _safe_float(adv["allocated_amount"])
                                 remaining = allocated - spent_total
@@ -724,8 +740,7 @@ elif menu == "🏢 Workspace":
                                                         st.error("Please enter a valid item concept description and non-zero layout amount.")
 
                         # ==========================================
-                        # 3. THE MISSING CREATION FORM (CRITICAL FIX)
-                        # Placed outside the loop so it renders even when table is empty!
+                        # 3. CREATION FORM
                         # ==========================================
                         if role in ("CEO", "Accountant"):
                             st.write("---")
@@ -786,6 +801,7 @@ elif menu == "🏢 Workspace":
                             confirm_and_rerun(f"💼 Company '{c_name.strip()}' created successfully.", icon="🏢")
                         except Exception as e:
                             st.error(f"Cannot save company: {e}")
+
 # ==============================================================================
 # VIEW C: VOUCHER WORKFLOW
 # ==============================================================================
@@ -803,9 +819,7 @@ elif menu == "✍️ Voucher Portal":
     if "v_form_type" not in st.session_state: st.session_state["v_form_type"] = ""
     if "v_form_remarks" not in st.session_state: st.session_state["v_form_remarks"] = ""
 
-    # Fetch vouchers with related company and project names via Supabase foreign key joins
     vouchers_raw = get_all_vouchers_raw()
-    # Flatten the nested response into a flat DataFrame
     voucher_rows = []
     for v in vouchers_raw:
         flat = {k: v[k] for k in v if k not in ("companies", "projects")}
@@ -818,9 +832,6 @@ elif menu == "✍️ Voucher Portal":
     ])
 
     def get_or_create_general_project(company_id):
-        """Vouchers submitted with no specific project still need a home so they show up
-        in that company's workspace and roll into its balance. We bucket them into an
-        auto-created 'General / Unassigned' project rather than leaving them orphaned."""
         existing = sb.table("projects").select("id").eq("company_id", company_id).eq("name", "General / Unassigned").execute()
         if existing.data:
             return int(existing.data[0]["id"])
@@ -1076,7 +1087,6 @@ elif menu == "⚙️ Settings" and role == "CEO":
 
                 new_assigned_role = st.selectbox("Select New Workspace Role", role_options, index=default_role_idx)
 
-                # This button belongs to the role form
                 if st.form_submit_button("Save New Role Matrix"):
                     dash_flag = True if new_assigned_role in ["Accountant", "CEO"] else False
                     sb.table("users").update({
@@ -1084,12 +1094,11 @@ elif menu == "⚙️ Settings" and role == "CEO":
                     }).eq("id", target_user_id).execute()
                     confirm_and_rerun(f"🛡️ Role updated for '{selected_username}' to {new_assigned_role}.", icon="🔄")
             
-            # --- FORM 2: PASSWORD OVERWRITE (Now completely separated!) ---
+            # --- FORM 2: PASSWORD OVERWRITE ---
             with st.form(f"change_pass_form_{target_user_id}", clear_on_submit=True):
                 st.markdown("🔒 **Administrative Security Key Reset**")
                 new_pass = st.text_input("Assign New Security Key / Password", type="password")
 
-                # Move the submit button INSIDE this block so it belongs to this form
                 if st.form_submit_button("Force Overwrite Password"):
                     if new_pass.strip():
                         sb.table("users").update({"password": new_pass.strip()}).eq("id", target_user_id).execute()
