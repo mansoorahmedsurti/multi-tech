@@ -153,8 +153,8 @@ def get_project_balance(project_id):
 
     unspent_cash_returned = total_allocated - total_spent
 
-    balance = income + loans - expense - approved_vouchers_sum - total_allocated + unspent_cash_returned
-    profit = income - expense - approved_vouchers_sum
+    balance = income + loans - expense - approved_vouchers_sum - total_allocated
+    profit = income - expense - approved_vouchers_sum - total_allocated
 
     return {
         "income": income, "expense": expense + approved_vouchers_sum, "loans": loans,
@@ -205,8 +205,8 @@ def get_company_balance(company_id):
     return {
         "income": income, "expense": expense, "loans": loans,
         "advances_allocated": total_allocated, "advances_spent": total_spent, "advances_remaining": unspent_cash_returned,
-        "balance": income + loans - expense - total_allocated + unspent_cash_returned,
-        "profit": income - expense
+        "balance": income + loans - expense - total_allocated,
+        "profit": income - expense - total_allocated
     }
 
 # --- Cached read-only lookups used at multiple call sites
@@ -409,8 +409,8 @@ if menu == "📊 Dashboard":
         spent_adv = spends_df["amount_spent"].apply(_safe_float).sum() if not spends_df.empty else 0.0
 
         unspent_advances = alloc_adv - spent_adv
-        overall_bal = inc + loans - exp - alloc_adv + unspent_advances
-        net_profit = inc - exp
+        overall_bal = inc + loans - exp - alloc_adv
+        net_profit = inc - exp - alloc_adv
         total_loans = loans
 
     m1, m2, m3 = st.columns(3)
@@ -424,7 +424,6 @@ if menu == "📊 Dashboard":
 * **Capital Infusions (Loans)**: `+ PKR{total_loans:,.2f}`
 * **Direct Clearances (Expenses)**: `- PKR{exp:,.2f}`
 * **Petty Cash Advanced**: `- PKR{alloc_adv:,.2f}`
-* **Unspent Saved Cash Retained**: `+ PKR{unspent_advances:,.2f}`
 ---
 * **Total Liquid Asset Balance**: **`PKR{overall_bal:,.2f}`**
 """)
@@ -673,8 +672,8 @@ elif menu == "🏢 Workspace":
                                     
                                     ac2.markdown(
                                         f"<p style='font-size:0.85rem; margin:0; text-align:right; color:#94a3b8;'>"
-                                        f"Given: <span style='color:#f8fafc; font-weight:600;'>PKR {allocated:,.0f}</span> | "
-                                        f"Bal: <span style='color:#10B981; font-weight:600;'>PKR {remaining:,.0f}</span>"
+                                        f"Bal: <span style='color:#10B981; font-weight:600;'>PKR {remaining:,.2f}</span> | "
+                                        f"Spend: <span style='color:#ef4444; font-weight:600;'>PKR {spent_total:,.2f}</span>"
                                         f"</p>", 
                                         unsafe_allow_html=True
                                     )
