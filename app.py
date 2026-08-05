@@ -1827,18 +1827,196 @@ elif menu == "🏢 Execution(Accounts)":
                         profit_margin = (net_profit / tot_income * 100.0) if tot_income > 0 else 0.0
                         cost_variance = planned_cost_total - (tot_expense + tot_adv_spends)
 
-                        # Top Audit Metrics
-                        sm1, sm2, sm3, sm4 = st.columns(4)
-                        sm1.metric("Quoted Value", f"PKR {quoted_val:,.0f}", f"Ref: {q_row['quotation_number']}" if q_row is not None else "No Quotation")
-                        sm2.metric("Total Income Collected", f"PKR {tot_income:,.0f}", f"{(tot_income / quoted_val * 100):.1f}% of Quoted" if quoted_val > 0 else None)
-                        sm3.metric("Total Executed Outflows", f"PKR {tot_actual_outflow:,.0f}", help="Direct Expenses + Field Staff Spends + Approved Vouchers")
-                        sm4.metric("Net Executed Profit", f"PKR {net_profit:,.0f}", f"{profit_margin:.1f}% Margin", delta_color="normal" if net_profit >= 0 else "inverse")
+                        # 3. Purchasing Total
+                        purchasing_total = float(q_components_df[q_components_df["actual_price"].apply(_safe_float) > 0]["actual_price"].apply(_safe_float).sum()) if not q_components_df.empty else 0.0
+
+                        # Top Audit Metrics - Key Project Amounts
+                        st.markdown("##### 📊 Key Project Amounts")
+                        km1, km2, km3, km4 = st.columns(4)
+                        km1.metric("Quotation Amount", f"PKR {quoted_val:,.0f}", f"Ref: {q_row['quotation_number']}" if q_row is not None else "No Quotation")
+                        km2.metric("Planning Amount", f"PKR {planned_cost_total:,.0f}")
+                        km3.metric("Purchasing Amount", f"PKR {purchasing_total:,.0f}" if purchasing_total > 0 else "🟡 Pending")
+                        km4.metric("Execution Amount", f"PKR {tot_actual_outflow:,.0f}", f"PKR {net_profit:,.0f} Profit" if net_profit >= 0 else f"PKR {net_profit:,.0f} Loss", delta_color="normal" if net_profit >= 0 else "inverse")
+
+                        # Printable Report Expander
+                        with st.expander("🖨️ Printable Project Financial & Component Audit Report", expanded=False):
+                            comp_html_rows = ""
+                            if not q_components_df.empty:
+                                for idx_c, (_, c_r) in enumerate(q_components_df.iterrows(), start=1):
+                                    pl_amt = _safe_float(c_r["price"])
+                                    ac_amt = _safe_float(c_r["actual_price"])
+                                    sav_amt = pl_amt - ac_amt if ac_amt > 0 else 0.0
+                                    comp_html_rows += f"""
+                                    <tr>
+                                        <td>{idx_c}</td>
+                                        <td><strong>{c_r['component_name']}</strong></td>
+                                        <td>PKR {pl_amt:,.0f}</td>
+                                        <td>{'PKR ' + f'{ac_amt:,.0f}' if ac_amt > 0 else '<span style="color:#d97706;">Pending</span>'}</td>
+                                        <td>{'PKR ' + f'{sav_amt:,.0f}' if ac_amt > 0 else '—'}</td>
+                                        <td>{c_r.get('purchased_by') or 'Unassigned'}</td>
+                                        <td>{c_r.get('purchaser_notes') or c_r.get('description') or '—'}</td>
+                                    </tr>
+                                    """
+                            else:
+                                comp_html_rows = "<tr><td colspan='7' style='text-align:center; color:#64748b;'>No components logged.</td></tr>"
+
+                            inc_html_rows = ""
+                            if not inc_data.empty:
+                                for idx_i, (_, i_r) in enumerate(inc_data.iterrows(), start=1):
+                                    inc_html_rows += f"<tr><td>{idx_i}</td><td>{i_r['title']}</td><td>PKR {_safe_float(i_r['amount']):,.0f}</td><td>{i_r.get('cheque_number') or '—'}</td></tr>"
+                            else:
+                                inc_html_rows = "<tr><td colspan='4' style='text-align:center; color:#64748b;'>No income receipts logged.</td></tr>"
+
+                            exp_html_rows = ""
+                            if not exp_data.empty:
+                                for idx_e, (_, e_r) in enumerate(exp_data.iterrows(), start=1):
+                                    exp_html_rows += f"<tr><td>{idx_e}</td><td>{e_r['title']}</td><td>PKR {_safe_float(e_r['amount']):,.0f}</td></tr>"
+                            else:
+                                exp_html_rows = "<tr><td colspan='3' style='text-align:center; color:#64748b;'>No direct expenses.</td></tr>"
+
+                            vouch_html_rows = ""
+                            if not p_vouchers_df.empty:
+                                for idx_v, (_, v_r) in enumerate(p_vouchers_df.iterrows(), start=1):
+                                    vouch_html_rows += f"<tr><td>{idx_v}</td><td>{v_r['voucher_number']}</td><td>{v_r['title']}</td><td>PKR {_safe_float(v_r['amount']):,.0f}</td><td>{v_r.get('type') or 'General'}</td></tr>"
+                            else:
+                                vouch_html_rows = "<tr><td colspan='5' style='text-align:center; color:#64748b;'>No approved vouchers linked.</td></tr>"
+
+                            html_report_doc = f"""
+                            <!DOCTYPE html>
+                            <html>
+                            <head>
+                            <style>
+                                body {{ font-family: 'Segoe UI', Arial, sans-serif; color: #0f172a; padding: 15px; margin: 0; background: #ffffff; }}
+                                .header-box {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #2563eb; padding-bottom: 10px; margin-bottom: 15px; }}
+                                .title {{ font-size: 1.3rem; font-weight: bold; color: #1e3a8a; }}
+                                .subtitle {{ font-size: 0.9rem; color: #475569; }}
+                                .amounts-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }}
+                                .card {{ background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px; text-align: center; }}
+                                .card-label {{ font-size: 0.75rem; font-weight: 600; text-transform: uppercase; color: #64748b; margin-bottom: 4px; }}
+                                .card-val {{ font-size: 1.1rem; font-weight: 700; color: #0f172a; }}
+                                table {{ width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-size: 0.85rem; }}
+                                th {{ background: #f1f5f9; color: #1e293b; text-align: left; padding: 8px; border: 1px solid #cbd5e1; font-weight: 600; }}
+                                td {{ padding: 7px 8px; border: 1px solid #e2e8f0; color: #334155; }}
+                                .sec-title {{ font-size: 1rem; font-weight: bold; color: #1e293b; margin-top: 15px; margin-bottom: 5px; border-left: 3px solid #2563eb; padding-left: 8px; }}
+                                .btn-print {{ background: #2563eb; color: #ffffff; padding: 8px 16px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 0.9rem; margin-bottom: 15px; }}
+                                .btn-print:hover {{ background: #1d4ed8; }}
+                                @media print {{
+                                    .btn-print {{ display: none !important; }}
+                                    body {{ padding: 0; }}
+                                }}
+                            </style>
+                            </head>
+                            <body>
+                                <button class="btn-print" onclick="window.print()">🖨️ Print Report / Save PDF</button>
+                                <div class="header-box">
+                                    <div>
+                                        <div class="title">Multi Tech Engineering Group</div>
+                                        <div class="subtitle">Project Financial Audit & Component Summary Report</div>
+                                    </div>
+                                    <div style="text-align: right;">
+                                        <div><strong>Company:</strong> {company_name}</div>
+                                        <div><strong>Project:</strong> {active_project_row['name']}</div>
+                                        <div><small>Printed On: {datetime.date.today()}</small></div>
+                                    </div>
+                                </div>
+
+                                <div class="amounts-grid">
+                                    <div class="card">
+                                        <div class="card-label">Quotation Amount</div>
+                                        <div class="card-val" style="color:#2563eb;">PKR {quoted_val:,.0f}</div>
+                                    </div>
+                                    <div class="card">
+                                        <div class="card-label">Planning Amount</div>
+                                        <div class="card-val" style="color:#475569;">PKR {planned_cost_total:,.0f}</div>
+                                    </div>
+                                    <div class="card">
+                                        <div class="card-label">Purchasing Amount</div>
+                                        <div class="card-val" style="color:#059669;">PKR {purchasing_total:,.0f}</div>
+                                    </div>
+                                    <div class="card">
+                                        <div class="card-label">Execution Amount</div>
+                                        <div class="card-val" style="color:#dc2626;">PKR {tot_actual_outflow:,.0f}</div>
+                                    </div>
+                                </div>
+
+                                <div class="sec-title">📦 Itemized Components & Purchaser Quotes</div>
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th style="width: 5%;">#</th>
+                                            <th>Item Description</th>
+                                            <th>Planned Price</th>
+                                            <th>Purchaser Quote</th>
+                                            <th>Savings / Overrun</th>
+                                            <th>Purchaser</th>
+                                            <th>Notes</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {comp_html_rows}
+                                    </tbody>
+                                </table>
+
+                                <div class="sec-title">🟢 Income Receipts Collected</div>
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th style="width: 5%;">#</th>
+                                            <th>Payment Description</th>
+                                            <th>Amount Received</th>
+                                            <th>Cheque / Ref #</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {inc_html_rows}
+                                    </tbody>
+                                </table>
+
+                                <div style="display: flex; gap: 15px;">
+                                    <div style="flex: 1;">
+                                        <div class="sec-title">🔴 Direct Expenses</div>
+                                        <table>
+                                            <thead>
+                                                <tr>
+                                                    <th style="width: 8%;">#</th>
+                                                    <th>Expense Description</th>
+                                                    <th>Amount</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {exp_html_rows}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div style="flex: 1;">
+                                        <div class="sec-title">🎫 Approved Vouchers Payouts</div>
+                                        <table>
+                                            <thead>
+                                                <tr>
+                                                    <th style="width: 8%;">#</th>
+                                                    <th>Voucher #</th>
+                                                    <th>Title</th>
+                                                    <th>Amount</th>
+                                                    <th>Type</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {vouch_html_rows}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </body>
+                            </html>
+                            """
+                            components.html(html_report_doc, height=500, scrolling=True)
 
                         st.write("---")
 
                         # Detailed Breakdown Tabs inside Summary
-                        sum_t1, sum_t2, sum_t3, sum_t4 = st.tabs([
+                        sum_t1, sum_t2, sum_t3, sum_t4, sum_t5 = st.tabs([
                             "📋 Quotation Baseline",
+                            "🛒 Procurement & Purchasing",
                             "🟢 Income Receipts",
                             "🔴 Expenses & Outflows",
                             "💳 Staff Advances Audit"
@@ -1865,6 +2043,42 @@ elif menu == "🏢 Execution(Accounts)":
                                 st.caption("No matching initial quotation found for this execution project.")
 
                         with sum_t2:
+                            st.markdown("##### 🛒 City Market Procurement & Purchaser Quotes")
+                            if q_components_df.empty:
+                                st.caption("No procurement or purchasing cost items logged for this project.")
+                            else:
+                                pur_comp_df = q_components_df.copy()
+                                pur_comp_df["price"] = pur_comp_df["price"].apply(_safe_float)
+                                pur_comp_df["actual_price"] = pur_comp_df["actual_price"].apply(_safe_float)
+
+                                reup_df = pur_comp_df[pur_comp_df["actual_price"] > 0]
+                                p_planned_total = pur_comp_df["price"].sum()
+                                p_actual_total = reup_df["actual_price"].sum() if not reup_df.empty else 0.0
+                                p_savings_total = reup_df["price"].sum() - p_actual_total if not reup_df.empty else 0.0
+
+                                pk1, pk2, pk3 = st.columns(3)
+                                pk1.metric("Initially Planned Cost", f"PKR {p_planned_total:,.0f}")
+                                pk2.metric("Actual Purchase Amount", f"PKR {p_actual_total:,.0f}" if p_actual_total > 0 else "🟡 Pending")
+                                pk3.metric("Net Money Saved", f"PKR {p_savings_total:,.0f}" if p_actual_total > 0 else "—", delta_color="normal" if p_savings_total >= 0 else "inverse")
+
+                                st.markdown("**Itemized Procurement & Purchaser Log**")
+                                pur_rows = []
+                                for idx_p, (_, p_row) in enumerate(pur_comp_df.iterrows(), start=1):
+                                    pl_p = p_row["price"]
+                                    ac_p = p_row["actual_price"]
+                                    p_sav = pl_p - ac_p if ac_p > 0 else 0.0
+                                    pur_rows.append({
+                                        "#": idx_p,
+                                        "Item Description": p_row["component_name"],
+                                        "Initially Planned Budget": f"PKR {pl_p:,.0f}",
+                                        "Actual Purchase Amount": f"PKR {ac_p:,.0f}" if ac_p > 0 else "🟡 Pending",
+                                        "Net Savings / (Overrun)": f"PKR {p_sav:,.0f}" if ac_p > 0 else "—",
+                                        "Purchaser": p_row.get("purchased_by") or "Unassigned",
+                                        "Notes": p_row.get("purchaser_notes") or "—"
+                                    })
+                                st.dataframe(pd.DataFrame(pur_rows), hide_index=True, use_container_width=True)
+
+                        with sum_t3:
                             st.markdown("##### 🟢 All Client Payment Inflows Received")
                             if not inc_data.empty:
                                 disp_inc = inc_data[["title", "amount", "cheque_number"]].copy()
@@ -1876,7 +2090,7 @@ elif menu == "🏢 Execution(Accounts)":
                             else:
                                 st.caption("No income receipts logged yet.")
 
-                        with sum_t3:
+                        with sum_t4:
                             st.markdown("##### 🔴 Complete Outflows Breakdown")
                             sum_col1, sum_col2 = st.columns(2)
                             with sum_col1:
@@ -1900,7 +2114,7 @@ elif menu == "🏢 Execution(Accounts)":
                                 else:
                                     st.caption("No approved vouchers linked.")
 
-                        with sum_t4:
+                        with sum_t5:
                             st.markdown("##### 💳 Staff Field Advances Audit")
                             if not p_adv_df.empty:
                                 adv_summary_rows = []
