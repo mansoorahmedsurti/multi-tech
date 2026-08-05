@@ -1314,39 +1314,72 @@ if menu == "📊 Dashboard":
     advances_df = tables["advances"].copy()
     spends_df = tables["spends"].copy()
 
-    if ledgers_df.empty:
+    if ledgers_df.empty and advances_df.empty:
         overall_bal, total_loans, net_profit, unspent_advances = 0.0, 0.0, 0.0, 0.0
-        inc, exp, loans, alloc_adv = 0.0, 0.0, 0.0, 0.0
+        inc, exp, loans, alloc_adv, spent_adv = 0.0, 0.0, 0.0, 0.0, 0.0
     else:
-        ledgers_df["created_at"] = pd.to_datetime(ledgers_df["created_at"]).dt.date
-        if date_limit: ledgers_df = ledgers_df[ledgers_df["created_at"] >= date_limit]
+        if not ledgers_df.empty:
+            ledgers_df["created_at"] = pd.to_datetime(ledgers_df["created_at"]).dt.date
+            if date_limit: ledgers_df = ledgers_df[ledgers_df["created_at"] >= date_limit]
+            inc = ledgers_df[ledgers_df["type"] == "income"]["amount"].apply(_safe_float).sum()
+            exp = ledgers_df[ledgers_df["type"] == "expense"]["amount"].apply(_safe_float).sum()
+            loans = ledgers_df[ledgers_df["type"] == "loan"]["amount"].apply(_safe_float).sum()
+        else:
+            inc, exp, loans = 0.0, 0.0, 0.0
 
-        inc = ledgers_df[ledgers_df["type"] == "income"]["amount"].apply(_safe_float).sum()
-        exp = ledgers_df[ledgers_df["type"] == "expense"]["amount"].apply(_safe_float).sum()
-        loans = ledgers_df[ledgers_df["type"] == "loan"]["amount"].apply(_safe_float).sum()
+        if not advances_df.empty:
+            alloc_adv = advances_df["allocated_amount"].apply(_safe_float).sum()
+        else:
+            alloc_adv = 0.0
 
-        alloc_adv = advances_df["allocated_amount"].apply(_safe_float).sum() if not advances_df.empty else 0.0
-        spent_adv = spends_df["amount_spent"].apply(_safe_float).sum() if not spends_df.empty else 0.0
+        if not spends_df.empty:
+            if date_limit and "created_at" in spends_df.columns:
+                spends_df["created_at_dt"] = pd.to_datetime(spends_df["created_at"]).dt.date
+                filt_spends = spends_df[spends_df["created_at_dt"] >= date_limit]
+                spent_adv = filt_spends["amount_spent"].apply(_safe_float).sum()
+            else:
+                spent_adv = spends_df["amount_spent"].apply(_safe_float).sum()
+        else:
+            spent_adv = 0.0
 
         unspent_advances = alloc_adv - spent_adv
-        overall_bal = inc + loans - exp - alloc_adv
-        net_profit = inc - exp - alloc_adv
+        overall_bal = inc + loans - exp - spent_adv
+        net_profit = inc - exp - spent_adv
         total_loans = loans
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Company Balance", f"PKR {overall_bal:,.0f}" if overall_bal else "—")
-    m2.metric("Total Loans", f"PKR {total_loans:,.0f}" if total_loans else "—")
-    m3.metric("Net Profit", f"PKR {net_profit:,.0f}" if net_profit else "—")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Company Balance", f"PKR {overall_bal:,.0f}" if overall_bal else "PKR 0")
+    m2.metric("Total Income", f"PKR {inc:,.0f}" if inc else "PKR 0")
+    m3.metric("Field Worker Expenses", f"PKR {spent_adv:,.0f}" if spent_adv else "PKR 0", delta=f"{spent_adv:,.0f} Logged Spends", delta_color="inverse")
+    m4.metric("Net Profit", f"PKR {net_profit:,.0f}" if net_profit else "PKR 0")
 
-    with st.expander(f"Details ({time_filter})"):
+    with st.expander(f"📊 Detailed Financial Outflows & Advances Audit ({time_filter})"):
         st.markdown(f"""
 * **Revenue Inflow (Income)**: `PKR {inc:,.0f}`
 * **Capital Infusions (Loans)**: `+ PKR {total_loans:,.0f}`
-* **Direct Clearances (Expenses)**: `- PKR {exp:,.0f}`
-* **Petty Cash Advanced**: `- PKR {alloc_adv:,.0f}`
+* **Direct Expenses**: `- PKR {exp:,.0f}`
+* **Field Worker Expenses Logged**: `- PKR {spent_adv:,.0f}`
+* **Field Advances Allocated**: `PKR {alloc_adv:,.0f}` *(Unspent Balance: PKR {unspent_advances:,.0f})*
 ---
-* **Total Liquid Asset Balance**: **`PKR {overall_bal:,.0f}`**
+* **Total Net Liquid Balance**: **`PKR {overall_bal:,.0f}`**
 """)
+        if not advances_df.empty:
+            st.markdown("##### 💳 Field Worker Staff Expense Audit Table")
+            adv_dash_rows = []
+            for _, a_r in advances_df.iterrows():
+                adv_id_val = int(a_r["id"])
+                w_sp = spends_df[spends_df["advance_id"] == adv_id_val] if not spends_df.empty else pd.DataFrame()
+                w_spent_tot = float(w_sp["amount_spent"].sum()) if not w_sp.empty else 0.0
+                w_alloc_tot = float(a_r["allocated_amount"])
+                adv_dash_rows.append({
+                    "Field Worker": a_r["person_name"],
+                    "Allocated Advance": f"PKR {w_alloc_tot:,.0f}",
+                    "Itemized Expenses Logged": f"PKR {w_spent_tot:,.0f}",
+                    "Unspent Balance": f"PKR {(w_alloc_tot - w_spent_tot):,.0f}"
+                })
+            disp_adv_dash = pd.DataFrame(adv_dash_rows)
+            disp_adv_dash.insert(0, "#", range(1, len(disp_adv_dash) + 1))
+            st.dataframe(disp_adv_dash, hide_index=True, use_container_width=True)
 
     st.markdown("---")
     st.markdown(f"### 📊 Quotation Conversion & Performance Metrics ({time_filter})")
