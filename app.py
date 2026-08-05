@@ -1100,16 +1100,19 @@ if st.session_state.get("user"):
             pass
 
 ROLE_MAP = {
-    "lg": "Lead Generator",
-    "lead generator": "Lead Generator",
+    "ceo": "CEO",
     "acc": "Accountant",
     "accountant": "Accountant",
-    "adv": "Advance",
-    "advance": "Advance",
-    "ceo": "CEO",
-    "pur": "Purchaser",
-    "purchase": "Purchaser",
-    "purchaser": "Purchaser"
+    "accounts": "Accountant",
+    "lg": "Quotation Sender",
+    "lead generator": "Quotation Sender",
+    "pur": "Quotation Sender",
+    "purchase": "Quotation Sender",
+    "purchaser": "Quotation Sender",
+    "quotation sender": "Quotation Sender",
+    "sender": "Quotation Sender",
+    "adv": "Quotation Sender",
+    "advance": "Quotation Sender"
 }
 
 # Parse & normalize roles list
@@ -1121,7 +1124,7 @@ for r in raw_roles:
         user_roles.append(norm_r)
 
 if not user_roles:
-    user_roles = ["Advance"]
+    user_roles = ["Quotation Sender"]
 
 if len(user_roles) > 1:
     role_options = ["All Assigned Roles"] + user_roles if "CEO" not in user_roles else user_roles
@@ -1137,24 +1140,14 @@ st.sidebar.markdown(f"👤 **{current_user['username']}** (`{current_user['role'
 active_roles_to_check = user_roles if role in ("All Assigned Roles", "All Roles") else [role]
 
 menu_options = []
-if "CEO" in active_roles_to_check:
-    if current_user.get("can_view_dashboard") and "📊 Dashboard" not in menu_options:
+if "CEO" in active_roles_to_check or "Accountant" in active_roles_to_check:
+    if current_user.get("can_view_dashboard", True) and "📊 Dashboard" not in menu_options:
         menu_options.append("📊 Dashboard")
     for item in ["📋 Quotation & Planning", "🛒 Purchase", "🎫 Voucher", "💳 Staff Advances", "🏢 Execution(Accounts)", "⚙️ Settings"]:
         if item not in menu_options: menu_options.append(item)
-elif "Accountant" in active_roles_to_check:
-    if current_user.get("can_view_dashboard") and "📊 Dashboard" not in menu_options:
-        menu_options.append("📊 Dashboard")
-    for item in ["📋 Quotation & Planning", "🛒 Purchase", "🎫 Voucher", "💳 Staff Advances", "🏢 Execution(Accounts)"]:
-        if item not in menu_options: menu_options.append(item)
 else:
-    if "Lead Generator" in active_roles_to_check:
-        if "📋 Quotation & Planning" not in menu_options: menu_options.append("📋 Quotation & Planning")
-    if "Purchaser" in active_roles_to_check:
-        if "🛒 Purchase" not in menu_options: menu_options.append("🛒 Purchase")
-    if "Advance" in active_roles_to_check:
-        for item in ["💳 Staff Advances", "🏢 Execution(Accounts)"]:
-            if item not in menu_options: menu_options.append(item)
+    for item in ["📋 Quotation & Planning", "🛒 Purchase", "🎫 Voucher"]:
+        if item not in menu_options: menu_options.append(item)
 
 menu = st.sidebar.radio("Navigation Workspaces", menu_options, label_visibility="collapsed")
 if st.sidebar.button("🚪 Log out", use_container_width=True):
@@ -1168,7 +1161,7 @@ if st.sidebar.button("🚪 Log out", use_container_width=True):
 # ==============================================================================
 
 if menu == "📊 Dashboard":
-    if role == "Advance" or not current_user["can_view_dashboard"]:
+    if role not in ("CEO", "Accountant") or not current_user.get("can_view_dashboard", True):
         st.error("🔒 Unauthorized: Access to executive dashboard scopes restricted.")
         st.stop()
 
@@ -1430,7 +1423,7 @@ if menu == "📊 Dashboard":
 # ==============================================================================
 
 elif menu == "💳 Staff Advances":
-    if role not in ("CEO", "Accountant", "Advance"):
+    if role not in ("CEO", "Accountant"):
         st.error("🔒 Unauthorized: Access restricted.")
         st.stop()
         
@@ -1582,7 +1575,7 @@ elif menu == "💳 Staff Advances":
 # ==============================================================================
 
 elif menu == "🏢 Execution(Accounts)":
-    if role == "Lead Generator":
+    if role not in ("CEO", "Accountant"):
         st.error("🔒 Unauthorized: Access restricted.")
         st.stop()
     st.title("🏢 Execution(Accounts) Workspace")
@@ -2478,10 +2471,6 @@ elif menu == "🛒 Purchase":
 # ==============================================================================
 
 elif menu == "🎫 Voucher":
-    if role in ("Advance", "Lead Generator"):
-        st.error("🔒 Unauthorized: Access is restricted.")
-        st.stop()
-        
     st.title("🎫 Voucher Requests & Log")
 
     if "v_form_title" not in st.session_state: st.session_state["v_form_title"] = ""
@@ -2540,7 +2529,7 @@ elif menu == "🎫 Voucher":
 </div>
 """
 
-    if role == "CEO":
+    if role in ("CEO", "Accountant"):
         p_v = vouchers_all[vouchers_all["status"] == "Pending"] if not vouchers_all.empty else pd.DataFrame()
         d_v = vouchers_all[vouchers_all["status"] == "To Be Discussed"] if not vouchers_all.empty else pd.DataFrame()
         h_v = vouchers_all[vouchers_all["status"].isin(["Approved", "Declined"])] if not vouchers_all.empty else pd.DataFrame()
@@ -2720,7 +2709,7 @@ elif menu == "🎫 Voucher":
 # VIEW D: SETTINGS (CEO ONLY) - ADVANCED ADMINISTRATIVE CONTROLS
 # ==============================================================================
 
-elif menu == "⚙️ Settings" and role == "CEO":
+elif menu == "⚙️ Settings" and role in ("CEO", "Accountant"):
     st.title("⚙️ Workspace Configurations")
 
     st_tabs = st.tabs(["➕ Add User Workspace", "🛠️ Manage Existing Users Structure"])
@@ -2730,7 +2719,7 @@ elif menu == "⚙️ Settings" and role == "CEO":
             st.markdown("**Add New Account Credentials**")
             acct_id = st.text_input("Username / ID", key="new_user_acct_id")
             acct_pw = st.text_input("Password", type="password", key="new_user_acct_pw")
-            acct_roles = st.multiselect("Assign System Roles", ["Accountant", "Advance", "CEO", "Lead Generator", "Purchaser"], default=["Advance"])
+            acct_roles = st.multiselect("Assign System Roles", ["CEO", "Accountant", "Quotation Sender"], default=["Quotation Sender"])
 
             if st.form_submit_button("Create Account", type="primary"):
                 if not acct_roles:
@@ -2769,7 +2758,7 @@ elif menu == "⚙️ Settings" and role == "CEO":
             # --- FORM 1: ROLE UPDATE ---
             with st.form(f"change_role_form_{target_user_id}"):
                 st.markdown("🔄 **Update Account Role Assignment**")
-                role_options = ["Accountant", "Advance", "CEO", "Lead Generator", "Purchaser"]
+                role_options = ["CEO", "Accountant", "Quotation Sender"]
 
                 # Parse current roles for default values
                 current_roles = [r.strip() for r in current_target_role.split(",")] if current_target_role else []
