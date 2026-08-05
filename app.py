@@ -1160,29 +1160,12 @@ def render_purchase_procurement_section(role, current_user, q_df, comp_all_df):
                                 else:
                                     st.error("Please enter a valid price.")
 
-# ==============================================================================
-# 3. AUTHENTICATION CONTROLLER (Clean Single-Frame Login Flow)
-# ==============================================================================
+# Clean URL query params to prevent URL tampering or session impersonation
+if st.query_params:
+    st.query_params.clear()
 
 if "user" not in st.session_state:
     st.session_state["user"] = None
-
-# Auto-restore persistent login session from query params if user hasn't explicitly logged out
-if st.session_state["user"] is None:
-    saved_username = st.query_params.get("session_user")
-    if saved_username:
-        try:
-            _cached_users = fetch_all_table_data().get("users", pd.DataFrame())
-            if not _cached_users.empty:
-                _u_match = _cached_users[_cached_users["username"].astype(str).str.lower() == str(saved_username).strip().lower()]
-                if not _u_match.empty:
-                    u_auto = _u_match.iloc[0]
-                    st.session_state["user"] = {
-                        "id": int(u_auto["id"]), "username": str(u_auto["username"]),
-                        "role": str(u_auto["role"]), "can_view_dashboard": bool(u_auto.get("can_view_dashboard", False))
-                    }
-        except Exception:
-            pass
 
 if st.session_state["user"] is None:
     st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
@@ -1208,7 +1191,7 @@ if st.session_state["user"] is None:
                                 "id": int(u["id"]), "username": u["username"],
                                 "role": u["role"], "can_view_dashboard": bool(u["can_view_dashboard"])
                             }
-                            st.query_params["session_user"] = u["username"]
+                            st.query_params.clear()
                             st.rerun()
                             st.stop()
                         else:
