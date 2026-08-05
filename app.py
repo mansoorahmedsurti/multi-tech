@@ -2268,9 +2268,11 @@ elif menu == "🏢 Execution(Accounts)":
 
                                     if is_editing_row and not is_read_only:
                                         with st.form(f"form_{edit_key}"):
-                                            fe1, fe2 = st.columns(2)
+                                            fe1, fe2, fe3 = st.columns([2, 1.5, 1.5])
                                             edit_title = fe1.text_input(f"{label_name} Description", value=row["title"])
                                             edit_amount = fe2.number_input("Amount (PKR)", min_value=0.0, step=500.0, value=float(row["amount"]))
+                                            row_dt_val = pd.to_datetime(row["created_at"]).date() if "created_at" in row and not pd.isna(row["created_at"]) else datetime.date.today()
+                                            edit_date = fe3.date_input("Record Date", value=row_dt_val)
                                             edit_cheque = st.text_input("Cheque Number (Optional)", value=cheque_val) if has_cheque else None
                                             fs1, fs2 = st.columns(2)
                                             save_row = fs1.form_submit_button("💾 Save", type="primary", use_container_width=True)
@@ -2278,7 +2280,11 @@ elif menu == "🏢 Execution(Accounts)":
                                             if save_row:
                                                 if edit_title.strip() and edit_amount > 0:
                                                     try:
-                                                        update_data = {"title": edit_title.strip(), "amount": float(edit_amount)}
+                                                        update_data = {
+                                                            "title": edit_title.strip(),
+                                                            "amount": float(edit_amount),
+                                                            "created_at": str(edit_date)
+                                                        }
                                                         if has_cheque:
                                                             update_data["cheque_number"] = (edit_cheque.strip() or None) if edit_cheque else None
                                                         sb.table("ledgers").update(update_data).eq("id", row_id).execute()
@@ -2297,22 +2303,30 @@ elif menu == "🏢 Execution(Accounts)":
                         if not is_read_only:
                             with st.form(f"add_entry_{ledger_type}_{pid}", clear_on_submit=True):
                                 if has_cheque:
+                                    f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns([2.2, 1.8, 1.8, 1.8, 1.4], vertical_alignment="bottom")
+                                    new_title = f_col1.text_input("Component", key=f"t_in_{ledger_type}_{pid}")
+                                    new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}")
+                                    new_date = f_col3.date_input("Record Date", value=datetime.date.today(), key=f"d_in_{ledger_type}_{pid}")
+                                    new_cheque = f_col4.text_input("Cheque Number (Optional)", key=f"c_in_{ledger_type}_{pid}")
+                                    submit_rec = f_col5.form_submit_button("➕ Add Row", use_container_width=True)
+                                else:
                                     f_col1, f_col2, f_col3, f_col4 = st.columns([2.5, 2, 2, 1.5], vertical_alignment="bottom")
                                     new_title = f_col1.text_input("Component", key=f"t_in_{ledger_type}_{pid}")
                                     new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}")
-                                    new_cheque = f_col3.text_input("Cheque Number (Optional)", key=f"c_in_{ledger_type}_{pid}")
-                                    submit_rec = f_col4.form_submit_button("➕ Add Record Row", use_container_width=True)
-                                else:
-                                    f_col1, f_col2, f_col3 = st.columns([3, 2, 1.5], vertical_alignment="bottom")
-                                    new_title = f_col1.text_input("Component", key=f"t_in_{ledger_type}_{pid}")
-                                    new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}")
+                                    new_date = f_col3.date_input("Record Date", value=datetime.date.today(), key=f"d_in_{ledger_type}_{pid}")
                                     new_cheque = None
-                                    submit_rec = f_col3.form_submit_button("➕ Add Record Row", use_container_width=True)
+                                    submit_rec = f_col4.form_submit_button("➕ Add Row", use_container_width=True)
 
                                 if submit_rec:
                                     if new_title.strip() and new_amount is not None and new_amount > 0:
                                         try:
-                                            insert_data = {"project_id": pid, "type": ledger_type, "title": new_title.strip(), "amount": float(new_amount)}
+                                            insert_data = {
+                                                "project_id": pid,
+                                                "type": ledger_type,
+                                                "title": new_title.strip(),
+                                                "amount": float(new_amount),
+                                                "created_at": str(new_date)
+                                            }
                                             if has_cheque:
                                                 insert_data["cheque_number"] = (new_cheque.strip() or None) if new_cheque else None
                                             sb.table("ledgers").insert(insert_data).execute()
@@ -2754,9 +2768,11 @@ elif menu == "🎫 Voucher":
 
                 if st.session_state.get(edit_key, False):
                     with st.form(f"form_{edit_key}"):
-                        ve1, ve2 = st.columns(2)
+                        ve1, ve2, ve3 = st.columns([2, 1.5, 1.5])
                         ve_title = ve1.text_input("Voucher Title*", value=r["title"])
                         ve_amount = ve2.number_input("Requested Payout Amount (PKR)*", min_value=0.0, step=10.0, value=float(r["amount"]))
+                        v_dt_val = pd.to_datetime(r["created_at"]).date() if "created_at" in r and not pd.isna(r["created_at"]) else datetime.date.today()
+                        ve_date = ve3.date_input("Voucher Date", value=v_dt_val)
                         ve_remarks = st.text_area("Remarks", value=r["remarks"] if not pd.isna(r["remarks"]) else "", height=45)
                         vs1, vs2 = st.columns(2)
                         save_v = vs1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
@@ -2764,8 +2780,10 @@ elif menu == "🎫 Voucher":
                         if save_v:
                             if ve_title.strip() and ve_amount > 0:
                                 sb.table("vouchers").update({
-                                    "title": ve_title.strip(), "amount": float(ve_amount),
-                                    "remarks": ve_remarks.strip() or None
+                                    "title": ve_title.strip(),
+                                    "amount": float(ve_amount),
+                                    "remarks": ve_remarks.strip() or None,
+                                    "created_at": str(ve_date)
                                 }).eq("id", int(r["id"])).execute()
                                 st.session_state[edit_key] = False
                                 confirm_and_rerun(f"✏️ Voucher request updated to '{ve_title.strip()}'.", icon="💾")
@@ -3186,8 +3204,10 @@ elif menu == "📋 Quotation & Planning":
                                             edit_lg_val = edit_lg_opt
                                             
                                     edit_st = st.selectbox("Status", ["Sent", "Successful", "Declined"], index=["Sent", "Successful", "Declined"].index(status_curr) if status_curr in ["Sent", "Successful", "Declined"] else 0)
+                                    q_dt_val = pd.to_datetime(q_row["created_at"]).date() if q_row.get("created_at") and not pd.isna(q_row["created_at"]) else datetime.date.today()
+                                    edit_q_date = st.date_input("Date Sent", value=q_dt_val, key=f"edit_q_date_{q_id}")
                                     edit_notes = st.text_area("Notes", value=str(q_row["notes"] or ""))
- 
+
                                     if st.form_submit_button("Save Changes"):
                                         sb.table("quotations").update({
                                             "company_name": edit_company.strip(),
@@ -3195,6 +3215,7 @@ elif menu == "📋 Quotation & Planning":
                                             "amount": float(edit_amt),
                                             "lead_generator": edit_lg_val.strip() or None,
                                             "status": edit_st,
+                                            "created_at": str(edit_q_date),
                                             "notes": edit_notes.strip() or None
                                         }).eq("id", q_id).execute()
                                         if edit_st == "Successful":
