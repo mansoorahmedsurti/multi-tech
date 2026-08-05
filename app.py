@@ -155,15 +155,18 @@ def _safe_float(value):
 def _safe_date(value, default=None):
     if default is None:
         default = datetime.date.today()
-    if value is None or pd.isna(value):
+    if value is None or value is True or value is False or pd.isna(value) or isinstance(value, bool):
         return default
     try:
-        if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+        if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime) and not isinstance(value, bool):
             return value
         dt = pd.to_datetime(value)
         if pd.isna(dt):
             return default
-        return dt.date()
+        d_val = dt.date()
+        if isinstance(d_val, datetime.date) and not isinstance(d_val, bool):
+            return d_val
+        return default
     except Exception:
         return default
 
@@ -172,21 +175,25 @@ def _invalidate_data_cache():
     fetch_all_table_data.clear()
     get_all_users_summary.clear()
 
-def confirm_and_rerun(message, icon="✅"):
-    """Shows a toast confirmation, resets form state to automatically close active forms, clears data cache, then reruns."""
-    st.toast(message, icon=icon)
+def reset_form_states():
+    """Safely reset expander and form state flags without mutating widget keys."""
     for key in list(st.session_state.keys()):
-        if key.startswith("show_add_") or (key.startswith("edit_") and "_btn" not in key and "btn_" not in key):
+        if key.startswith("show_add_"):
             try:
                 st.session_state[key] = False
             except Exception:
                 pass
-        if key in ("edit_co_id", "edit_proj_id"):
+        elif key in ("edit_co_id", "edit_proj_id"):
             try:
                 st.session_state[key] = None
             except Exception:
                 pass
-        if key == "q_form_has_error":
+        elif key.startswith("edit_advperson_") or key.startswith("edit_sp_") or key.startswith("edit_plan_comp_") or key.startswith("edit_q_form_"):
+            try:
+                st.session_state[key] = False
+            except Exception:
+                pass
+        elif key == "q_form_has_error":
             try:
                 st.session_state[key] = False
             except Exception:
@@ -198,29 +205,17 @@ def confirm_and_rerun(message, icon="✅"):
     st.session_state["q_form_amount"] = 0.0
     st.session_state["q_form_notes"] = ""
 
+def confirm_and_rerun(message, icon="✅"):
+    """Shows a toast confirmation, resets form state to automatically close active forms, clears data cache, then reruns."""
+    st.toast(message, icon=icon)
+    reset_form_states()
     _invalidate_data_cache()
     st.rerun()
 
 def confirm_warn_and_rerun(message, icon="⚠️"):
     """Same as confirm_and_rerun but for warnings/declines/removals."""
     st.toast(message, icon=icon)
-    for key in list(st.session_state.keys()):
-        if key.startswith("show_add_") or (key.startswith("edit_") and "_btn" not in key and "btn_" not in key):
-            try:
-                st.session_state[key] = False
-            except Exception:
-                pass
-        if key in ("edit_co_id", "edit_proj_id"):
-            try:
-                st.session_state[key] = None
-            except Exception:
-                pass
-        if key == "q_form_has_error":
-            try:
-                st.session_state[key] = False
-            except Exception:
-                pass
-
+    reset_form_states()
     _invalidate_data_cache()
     st.rerun()
 
@@ -3171,13 +3166,13 @@ elif menu == "📋 Quotation & Planning":
                         st.session_state["q_form_company"] = company_final
                         st.session_state["q_form_project"] = project_final
                         st.session_state["q_form_num"] = q_num.strip()
-                        st.session_state["q_form_amount"] = float(q_amount)
+                        st.session_state["q_form_amount"] = float(q_amount) if q_amount is not None else 0.0
                         st.session_state["q_form_notes"] = q_notes.strip()
 
                         if not company_final or not project_final:
                             st.session_state["q_form_has_error"] = True
                             st.error("Company Name and Quotation Project Name are mandatory.")
-                        elif q_amount <= 0:
+                        elif q_amount is None or q_amount <= 0:
                             st.session_state["q_form_has_error"] = True
                             st.error("Quotation Amount must be greater than 0.")
                         else:
