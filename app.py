@@ -537,17 +537,54 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup
 /* Popover */
 div[data-testid="stPopover"] button { font-size: 0.82rem !important; padding: 0.1rem 0.35rem !important; }
 
-/* Cards */
+/* Table zebra striping */
+div[data-testid="stDataFrame"] table tbody tr:nth-child(even) {
+    background-color: #f8fafc !important;
+}
+div[data-testid="stDataFrame"] table tbody tr:nth-child(odd) {
+    background-color: #ffffff !important;
+}
+
+/* Alternating Tones for Expanders */
+div[data-testid="stExpander"]:nth-of-type(3n+1) {
+    background-color: #f8fafc !important;
+    border-left: 5px solid #2563eb !important;
+    border-radius: 6px !important;
+}
+div[data-testid="stExpander"]:nth-of-type(3n+2) {
+    background-color: #f0fdf4 !important;
+    border-left: 5px solid #059669 !important;
+    border-radius: 6px !important;
+}
+div[data-testid="stExpander"]:nth-of-type(3n+0) {
+    background-color: #faf5ff !important;
+    border-left: 5px solid #7c3aed !important;
+    border-radius: 6px !important;
+}
+
+/* Cards & Containers Toning */
 .compact-card {
-border: 1px solid #d1d5db;
-border-radius: 4px;
-padding: 4px 7px;
-margin-bottom: 3px;
+border: 1px solid #cbd5e1;
+border-radius: 6px;
+padding: 8px 12px;
+margin-bottom: 6px;
 background-color: #ffffff;
 color: #111111 !important;
-box-shadow: 0 1px 1px rgba(0,0,0,0.01);
+box-shadow: 0 1px 2px rgba(0,0,0,0.03);
 }
-.compact-card h4 { font-size: 0.85rem !important; color: #111111 !important; margin: 0 !important; }
+.compact-card:nth-of-type(3n+1) {
+    background-color: #f8fafc !important;
+    border-left: 5px solid #2563eb !important;
+}
+.compact-card:nth-of-type(3n+2) {
+    background-color: #f0fdf4 !important;
+    border-left: 5px solid #059669 !important;
+}
+.compact-card:nth-of-type(3n+0) {
+    background-color: #fff7ed !important;
+    border-left: 5px solid #ea580c !important;
+}
+.compact-card h4 { font-size: 0.88rem !important; color: #111111 !important; margin: 0 !important; }
 .compact-card h3 { font-size: 0.95rem !important; color: #111111 !important; margin: 0 !important; }
 .compact-card p, .compact-card span, .compact-card small, .compact-card strong, .compact-card em { font-size: 0.74rem !important; color: #4b5563 !important; }
 
@@ -1627,6 +1664,15 @@ elif menu == "🏢 Execution(Accounts)":
         company_name = r["name"]
         c_bal = get_company_balance(c_id, _precomputed=_all_balances, _zero=_zero_bal)
 
+        bg_palette = [
+            ("background-color: #f8fafc; border-left: 5px solid #2563eb;", "#1e40af"),
+            ("background-color: #f0fdf4; border-left: 5px solid #059669;", "#065f46"),
+            ("background-color: #faf5ff; border-left: 5px solid #7c3aed;", "#5b21b6"),
+            ("background-color: #fff7ed; border-left: 5px solid #ea580c;", "#9a3412")
+        ]
+        curr_bg, curr_text_color = bg_palette[idx % len(bg_palette)]
+
+        st.markdown(f'<div style="{curr_bg} border-radius: 6px; padding: 8px 12px; margin-bottom: 6px; border-top: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0;"><strong style="font-size: 1.05rem; color: {curr_text_color};">🏛️ {r["name"]}</strong></div>', unsafe_allow_html=True)
         with st.container(border=True):
             col_name, col_bal, col_prof, col_loan, col_edit, col_btn = st.columns([1.8, 2.2, 2.2, 2.2, 1.6, 1.3])
             col_name.markdown(f"**{r['name']}**")
