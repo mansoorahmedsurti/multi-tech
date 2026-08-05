@@ -2322,18 +2322,39 @@ elif menu == "🏢 Execution(Accounts)":
                     def render_simple_form_tab(data_df, ledger_type, label_name, has_nature=False):
                         target_data_df = data_df.copy() if not data_df.empty else pd.DataFrame()
 
-                        if not target_data_df.empty:
-                            def _parse_heading_subcat(t_val):
-                                t_str = str(t_val).strip()
-                                if t_str.startswith("[") and "]" in t_str:
-                                    hdr_part = t_str[1:t_str.index("]")]
-                                    item_part = t_str[t_str.index("]") + 1:].strip()
-                                    if " > " in hdr_part:
-                                        h, s = hdr_part.split(" > ", 1)
-                                        return h.strip(), s.strip(), item_part
-                                    return hdr_part.strip(), "General", item_part
-                                return "General Expenses / Components", "General", t_str
+                        def _parse_heading_subcat(t_val):
+                            t_str = str(t_val).strip()
+                            if t_str.startswith("[") and "]" in t_str:
+                                hdr_part = t_str[1:t_str.index("]")]
+                                item_part = t_str[t_str.index("]") + 1:].strip()
+                                if " > " in hdr_part:
+                                    h, s = hdr_part.split(" > ", 1)
+                                    return h.strip(), s.strip(), item_part
+                                return hdr_part.strip(), "General", item_part
+                            return "General Expenses / Components", "General", t_str
 
+                        # Extract available category headings for dropdown
+                        all_headings = []
+                        if not target_data_df.empty:
+                            for _, r in target_data_df.iterrows():
+                                h, _, _ = _parse_heading_subcat(r["title"])
+                                if h and h not in all_headings:
+                                    all_headings.append(h)
+
+                        cat_options = ["📊 All Category Headings (Combined)"] + [f"📂 {h}" for h in all_headings]
+                        
+                        cat_col1, cat_col2 = st.columns([3.2, 6.8], vertical_alignment="center")
+                        cat_col1.markdown("##### 📁 Category Heading Scope")
+                        selected_cat_opt = cat_col2.selectbox(
+                            "Select Category Heading",
+                            cat_options,
+                            key=f"cat_sel_{ledger_type}_{pid}",
+                            label_visibility="collapsed"
+                        )
+                        
+                        chosen_cat = selected_cat_opt.replace("📂 ", "").strip() if selected_cat_opt != "📊 All Category Headings (Combined)" else None
+
+                        if not target_data_df.empty:
                             parsed_rows = []
                             for _, r in target_data_df.iterrows():
                                 h, s, clean_item = _parse_heading_subcat(r["title"])
@@ -2344,93 +2365,100 @@ elif menu == "🏢 Execution(Accounts)":
                                 parsed_rows.append(r_dict)
                             
                             parsed_df = pd.DataFrame(parsed_rows)
-                            grouped = parsed_df.groupby("heading")
+                            if chosen_cat:
+                                parsed_df = parsed_df[parsed_df["heading"] == chosen_cat]
 
-                            for heading_name, heading_group in grouped:
-                                head_total = heading_group["amount"].apply(_safe_float).sum()
-                                with st.expander(f"📂 **{heading_name}** — Total: PKR {head_total:,.0f} ({len(heading_group)} items)", expanded=True):
-                                    sub_grouped = heading_group.groupby("subcat")
-                                    for subcat_name, subcat_group in sub_grouped:
-                                        if subcat_name != "General":
-                                            sub_total = subcat_group["amount"].apply(_safe_float).sum()
-                                            st.markdown(f"🏷️ **Sub-Category: {subcat_name}** *(PKR {sub_total:,.0f})*")
-                                        
-                                        for _, row in subcat_group.iterrows():
-                                            row_id = int(row["id"])
-                                            edit_key = f"edit_{ledger_type}_{row_id}"
-                                            is_editing_row = st.session_state.get(edit_key, False)
-                                            nature_val = row.get("cheque_number") if not pd.isna(row.get("cheque_number")) else None
+                            if not parsed_df.empty:
+                                grouped = parsed_df.groupby("heading")
 
-                                            with st.container(border=True):
-                                                rc1, rc2, rc3 = st.columns([4, 2.5, 1.8])
-                                                title_display = row["clean_title"]
-                                                if has_nature and nature_val:
-                                                    title_display += f"  \n🏷️ Nature: `{nature_val}`"
-                                                rc1.markdown(f"• **{title_display}**")
-                                                rc2.markdown(f"PKR {_safe_float(row['amount']):,.0f}")
-                                                if not is_read_only:
-                                                    ed_col1, ed_col2 = rc3.columns(2)
-                                                    if ed_col1.button("✏️", key=f"btn_{edit_key}", use_container_width=True, help="Edit"):
-                                                        next_row_edit = not is_editing_row
-                                                        close_all_open_forms(except_key=edit_key)
-                                                        st.session_state[edit_key] = next_row_edit
-                                                        st.rerun()
-                                                    if ed_col2.button("🗑️", key=f"del_{ledger_type}_{row_id}", use_container_width=True, help="Delete"):
-                                                        try:
-                                                            sb.table("ledgers").delete().eq("id", row_id).execute()
-                                                            confirm_warn_and_rerun(f"Deleted {ledger_type} entry.", icon="🗑️")
-                                                        except Exception as e:
-                                                            st.error(f"Cannot delete record: {e}")
+                                for heading_name, heading_group in grouped:
+                                    head_total = heading_group["amount"].apply(_safe_float).sum()
+                                    with st.expander(f"📂 **{heading_name}** — Total: PKR {head_total:,.0f} ({len(heading_group)} items)", expanded=True):
+                                        sub_grouped = heading_group.groupby("subcat")
+                                        for subcat_name, subcat_group in sub_grouped:
+                                            if subcat_name != "General":
+                                                sub_total = subcat_group["amount"].apply(_safe_float).sum()
+                                                st.markdown(f"🏷️ **Sub-Category: {subcat_name}** *(PKR {sub_total:,.0f})*")
+                                            
+                                            for _, row in subcat_group.iterrows():
+                                                row_id = int(row["id"])
+                                                edit_key = f"edit_{ledger_type}_{row_id}"
+                                                is_editing_row = st.session_state.get(edit_key, False)
+                                                nature_val = row.get("cheque_number") if not pd.isna(row.get("cheque_number")) else None
 
-                                                if is_editing_row and not is_read_only:
-                                                    with st.form(f"form_{edit_key}"):
-                                                        fe_h, fe_s = st.columns(2)
-                                                        edit_h = fe_h.text_input("General Heading / Main Category", value=row["heading"])
-                                                        edit_s = fe_s.text_input("Sub Category", value=row["subcat"] if row["subcat"] != "General" else "")
-                                                        
-                                                        fe1, fe2, fe3 = st.columns([2, 1.5, 1.5])
-                                                        edit_title = fe1.text_input(f"{label_name} Description", value=row["clean_title"])
-                                                        edit_amount = fe2.number_input("Amount (PKR)", min_value=0.0, step=500.0, value=float(row["amount"]))
-                                                        row_dt_val = _safe_date(row.get("created_at"))
-                                                        edit_date = fe3.date_input("Record Date", value=row_dt_val)
-                                                        
-                                                        edit_nature = st.text_input("Payment Nature", value=str(nature_val or "")) if has_nature else None
-                                                        fs1, fs2 = st.columns(2)
-                                                        save_row = fs1.form_submit_button("💾 Save", type="primary", use_container_width=True)
-                                                        cancel_row = fs2.form_submit_button("✖️ Cancel", use_container_width=True)
-                                                        if save_row:
-                                                            if edit_title.strip() and edit_amount > 0:
-                                                                try:
-                                                                    full_hdr = edit_h.strip() if edit_h.strip() else "General Expenses / Components"
-                                                                    if edit_s.strip():
-                                                                        full_hdr += f" > {edit_s.strip()}"
-                                                                    full_title = f"[{full_hdr}] {edit_title.strip()}" if full_hdr != "General Expenses / Components" else edit_title.strip()
-
-                                                                    update_data = {
-                                                                        "title": full_title,
-                                                                        "amount": float(edit_amount),
-                                                                        "created_at": str(edit_date)
-                                                                    }
-                                                                    if has_nature:
-                                                                        update_data["cheque_number"] = edit_nature.strip() if edit_nature else None
-                                                                    sb.table("ledgers").update(update_data).eq("id", row_id).execute()
-                                                                    st.session_state[edit_key] = False
-                                                                    confirm_and_rerun(f"✏️ {label_name} record updated.", icon="💾")
-                                                                except Exception as e:
-                                                                    st.error(f"Cannot update record: {e}")
-                                                            else:
-                                                                st.error("Please enter a valid description and non-zero amount.")
-                                                        if cancel_row:
-                                                            st.session_state[edit_key] = False
+                                                with st.container(border=True):
+                                                    rc1, rc2, rc3 = st.columns([4, 2.5, 1.8])
+                                                    title_display = row["clean_title"]
+                                                    if has_nature and nature_val:
+                                                        title_display += f"  \n🏷️ Nature: `{nature_val}`"
+                                                    rc1.markdown(f"• **{title_display}**")
+                                                    rc2.markdown(f"PKR {_safe_float(row['amount']):,.0f}")
+                                                    if not is_read_only:
+                                                        ed_col1, ed_col2 = rc3.columns(2)
+                                                        if ed_col1.button("✏️", key=f"btn_{edit_key}", use_container_width=True, help="Edit"):
+                                                            next_row_edit = not is_editing_row
+                                                            close_all_open_forms(except_key=edit_key)
+                                                            st.session_state[edit_key] = next_row_edit
                                                             st.rerun()
+                                                        if ed_col2.button("🗑️", key=f"del_{ledger_type}_{row_id}", use_container_width=True, help="Delete"):
+                                                            try:
+                                                                sb.table("ledgers").delete().eq("id", row_id).execute()
+                                                                confirm_warn_and_rerun(f"Deleted {ledger_type} entry.", icon="🗑️")
+                                                            except Exception as e:
+                                                                st.error(f"Cannot delete record: {e}")
+
+                                                    if is_editing_row and not is_read_only:
+                                                        with st.form(f"form_{edit_key}"):
+                                                            fe_h, fe_s = st.columns(2)
+                                                            edit_h = fe_h.text_input("General Heading / Main Category", value=row["heading"])
+                                                            edit_s = fe_s.text_input("Sub Category", value=row["subcat"] if row["subcat"] != "General" else "")
+                                                            
+                                                            fe1, fe2, fe3 = st.columns([2, 1.5, 1.5])
+                                                            edit_title = fe1.text_input(f"{label_name} Description", value=row["clean_title"])
+                                                            edit_amount = fe2.number_input("Amount (PKR)", min_value=0.0, step=500.0, value=float(row["amount"]))
+                                                            row_dt_val = _safe_date(row.get("created_at"))
+                                                            edit_date = fe3.date_input("Record Date", value=row_dt_val)
+                                                            
+                                                            edit_nature = st.text_input("Payment Nature", value=str(nature_val or "")) if has_nature else None
+                                                            fs1, fs2 = st.columns(2)
+                                                            save_row = fs1.form_submit_button("💾 Save", type="primary", use_container_width=True)
+                                                            cancel_row = fs2.form_submit_button("✖️ Cancel", use_container_width=True)
+                                                            if save_row:
+                                                                if edit_title.strip() and edit_amount > 0:
+                                                                    try:
+                                                                        full_hdr = edit_h.strip() if edit_h.strip() else "General Expenses / Components"
+                                                                        if edit_s.strip():
+                                                                            full_hdr += f" > {edit_s.strip()}"
+                                                                        full_title = f"[{full_hdr}] {edit_title.strip()}" if full_hdr != "General Expenses / Components" else edit_title.strip()
+
+                                                                        update_data = {
+                                                                            "title": full_title,
+                                                                            "amount": float(edit_amount),
+                                                                            "created_at": str(edit_date)
+                                                                        }
+                                                                        if has_nature:
+                                                                            update_data["cheque_number"] = edit_nature.strip() if edit_nature else None
+                                                                        sb.table("ledgers").update(update_data).eq("id", row_id).execute()
+                                                                        st.session_state[edit_key] = False
+                                                                        confirm_and_rerun(f"✏️ {label_name} record updated.", icon="💾")
+                                                                    except Exception as e:
+                                                                        st.error(f"Cannot update record: {e}")
+                                                                else:
+                                                                    st.error("Please enter a valid description and non-zero amount.")
+                                                            if cancel_row:
+                                                                st.session_state[edit_key] = False
+                                                                st.rerun()
+                            else:
+                                st.caption(f"No {label_name.lower()} records logged under '{chosen_cat}'.")
                         else:
                             st.caption(f"No {label_name.lower()} records logged yet.")
 
                         if not is_read_only:
                             with st.form(f"add_entry_{ledger_type}_{pid}", clear_on_submit=True):
-                                st.markdown(f"➕ **Add New {label_name} Entry with Category Heading**")
+                                st.markdown(f"➕ **Add New {label_name} Entry**")
                                 hc1, hc2 = st.columns(2)
-                                in_heading = hc1.text_input("General Heading / Main Category", placeholder="e.g. Accessories, Electrical, Site Labor", key=f"h_in_{ledger_type}_{pid}")
+                                default_h_val = chosen_cat if chosen_cat else ""
+                                in_heading = hc1.text_input("General Heading / Main Category", value=default_h_val, placeholder="e.g. Accessories, Electrical, Site Labor", key=f"h_in_{ledger_type}_{pid}")
                                 in_subcat = hc2.text_input("Sub-Category (Optional)", placeholder="e.g. Wiring, Pipes, Sockets", key=f"sub_in_{ledger_type}_{pid}")
                                 
                                 if has_nature:
