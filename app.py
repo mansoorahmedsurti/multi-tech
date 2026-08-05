@@ -410,15 +410,20 @@ div[data-testid="stSelectbox"] > div, div[data-testid="stTextInput"] > div, div[
     gap: 2px !important;
 }
 div[data-baseweb="input"], div[data-baseweb="select"], div[data-baseweb="textarea"], div[data-baseweb="base-input"], input, select, textarea {
-    min-height: 1.6rem !important;
-    padding: 0px 3px !important;
-    font-size: 0.92rem !important;
-    border: 1px solid #cbd5e1 !important;
-    background-color: #f9fafb !important;
-    color: #111111 !important;
+    min-height: 1.8rem !important;
+    padding: 2px 6px !important;
+    font-size: 0.95rem !important;
+    border: 1.5px solid #334155 !important;
+    border-radius: 5px !important;
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+}
+div[data-baseweb="input"]:focus-within, div[data-baseweb="select"]:focus-within, div[data-baseweb="textarea"]:focus-within {
+    border: 2px solid #2563eb !important;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2) !important;
 }
 div[data-baseweb="input"] input, div[data-baseweb="select"] *, div[data-baseweb="textarea"] textarea, input, select, textarea {
-    color: #111111 !important;
+    color: #0f172a !important;
     background-color: transparent !important;
 }
 .stSelectbox, .stTextInput, .stNumberInput, .stTextArea { margin-bottom: 0.05rem !important; }
@@ -1006,14 +1011,19 @@ if "user" not in st.session_state:
     st.session_state["user"] = None
 
 if st.session_state["user"] is None:
-    st.markdown("<div style='margin-top: 3.5rem;'></div>", unsafe_allow_html=True)
-    st.markdown("<h2 style='text-align: center;'>Multi Tech Engineering Group Sign In</h2>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 2rem;'></div>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col2:
+        logo_login_path = "logo.png" if os.path.exists("logo.png") else ("logo.jpeg" if os.path.exists("logo.jpeg") else ("logo.jpg" if os.path.exists("logo.jpg") else None))
+        if logo_login_path:
+            st.image(logo_login_path, use_container_width=True)
+        else:
+            st.markdown("<h2 style='text-align: center;'>Multi Tech Engineering Group Sign In</h2>", unsafe_allow_html=True)
+
         with st.form("login_form", clear_on_submit=False):
             u_name = st.text_input("Username", key="auth_u_name")
             p_word = st.text_input("Password", type="password", key="auth_p_word")
-            submit_login = st.form_submit_button("Login", type="primary", use_container_width=True)
+            submit_login = st.form_submit_button("Sign In", type="primary", use_container_width=True)
             if submit_login:
                 if u_name.strip() and p_word.strip():
                     try:
