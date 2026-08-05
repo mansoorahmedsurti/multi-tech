@@ -177,33 +177,27 @@ def _invalidate_data_cache():
 
 def reset_form_states():
     """Safely reset expander and form state flags without mutating widget keys."""
-    for key in list(st.session_state.keys()):
-        if key.startswith("show_add_"):
-            try:
-                st.session_state[key] = False
-            except Exception:
-                pass
-        elif key in ("edit_co_id", "edit_proj_id"):
-            try:
-                st.session_state[key] = None
-            except Exception:
-                pass
-        elif key.startswith("edit_advperson_") or key.startswith("edit_sp_") or key.startswith("edit_plan_comp_") or key.startswith("edit_q_form_"):
-            try:
-                st.session_state[key] = False
-            except Exception:
-                pass
-        elif key == "q_form_has_error":
-            try:
-                st.session_state[key] = False
-            except Exception:
-                pass
-
+    close_all_open_forms()
     st.session_state["q_form_company"] = ""
     st.session_state["q_form_project"] = ""
     st.session_state["q_form_num"] = ""
     st.session_state["q_form_amount"] = 0.0
     st.session_state["q_form_notes"] = ""
+
+def close_all_open_forms(except_key=None):
+    """Mutually exclusive form toggle — ensures only ONE company, project, quotation, or edit form is open at a time."""
+    for key in list(st.session_state.keys()):
+        if key == except_key:
+            continue
+        if key.startswith("show_add_"):
+            try: st.session_state[key] = False
+            except Exception: pass
+        elif key in ("edit_co_id", "edit_proj_id", "active_edit_q_id"):
+            try: st.session_state[key] = None
+            except Exception: pass
+        elif key.startswith("edit_advperson_") or key.startswith("edit_sp_") or key.startswith("edit_plan_comp_") or key.startswith("edit_income_") or key.startswith("edit_expense_") or key.startswith("edit_loan_") or key.startswith("edit_v_"):
+            try: st.session_state[key] = False
+            except Exception: pass
 
 def confirm_and_rerun(message, icon="✅"):
     """Shows a toast confirmation, resets form state to automatically close active forms, clears data cache, then reruns."""
@@ -1786,7 +1780,9 @@ elif menu == "🏢 Execution(Accounts)":
             if not is_read_only:
                 edit_c1, edit_c2 = col_edit.columns(2)
                 if edit_c1.button("✏️", key=f"edit_co_btn_{c_id}", use_container_width=True, help="Edit company details"):
-                    st.session_state["edit_co_id"] = None if is_editing_co else c_id
+                    next_co_edit = None if is_editing_co else c_id
+                    close_all_open_forms(except_key="edit_co_id")
+                    st.session_state["edit_co_id"] = next_co_edit
                     st.rerun()
                 if edit_c2.button("🗑️", key=f"del_co_btn_{c_id}", use_container_width=True, help="Delete company entity"):
                     try:
@@ -1799,7 +1795,9 @@ elif menu == "🏢 Execution(Accounts)":
             btn_label = "🔒 Close" if is_active else "📂 Open"
 
             if col_btn.button(btn_label, key=f"btn_co_{c_id}", use_container_width=True, type="primary" if is_active else "secondary"):
-                st.session_state["sel_co_id"] = None if is_active else c_id
+                next_sel = None if is_active else c_id
+                close_all_open_forms(except_key="sel_co_id")
+                st.session_state["sel_co_id"] = next_sel
                 st.session_state["sel_proj_id"] = None
                 st.rerun()
 
@@ -1859,12 +1857,14 @@ elif menu == "🏢 Execution(Accounts)":
                     if not is_read_only:
                         pe_col1, pe_col2, pe_col3 = p_edit_col.columns([1, 1, 1])
                         if pe_col1.button("➕", key=f"add_proj_btn_{c_id}", use_container_width=True, help="Create New Project"):
-                            st.session_state[f"show_add_proj_{c_id}"] = not is_adding_proj
-                            st.session_state["edit_proj_id"] = None
+                            next_add = not is_adding_proj
+                            close_all_open_forms(except_key=f"show_add_proj_{c_id}")
+                            st.session_state[f"show_add_proj_{c_id}"] = next_add
                             st.rerun()
                         if pe_col2.button("✏️", key=f"edit_proj_btn_{pid}", use_container_width=True, help="Edit Project"):
-                            st.session_state["edit_proj_id"] = None if is_editing_proj else pid
-                            st.session_state[f"show_add_proj_{c_id}"] = False
+                            next_p_edit = None if is_editing_proj else pid
+                            close_all_open_forms(except_key="edit_proj_id")
+                            st.session_state["edit_proj_id"] = next_p_edit
                             st.rerun()
                         if pe_col3.button("🗑️", key=f"del_proj_btn_{pid}", use_container_width=True, help="Delete Project"):
                             try:
@@ -2371,7 +2371,9 @@ elif menu == "🏢 Execution(Accounts)":
                                                 if not is_read_only:
                                                     ed_col1, ed_col2 = rc3.columns(2)
                                                     if ed_col1.button("✏️", key=f"btn_{edit_key}", use_container_width=True, help="Edit"):
-                                                        st.session_state[edit_key] = not is_editing_row
+                                                        next_row_edit = not is_editing_row
+                                                        close_all_open_forms(except_key=edit_key)
+                                                        st.session_state[edit_key] = next_row_edit
                                                         st.rerun()
                                                     if ed_col2.button("🗑️", key=f"del_{ledger_type}_{row_id}", use_container_width=True, help="Delete"):
                                                         try:
@@ -2599,7 +2601,9 @@ elif menu == "🏢 Execution(Accounts)":
                                                             if is_owner or can_manage:
                                                                 sp_btn_col1, sp_btn_col2 = sp_c3.columns(2)
                                                                 if sp_btn_col1.button("✏️", key=f"btn_edit_sp_{sp_id}", use_container_width=True, help="Edit Spend"):
-                                                                    st.session_state[sp_edit_key] = not is_editing_sp
+                                                                    next_sp_edit = not is_editing_sp
+                                                                    close_all_open_forms(except_key=sp_edit_key)
+                                                                    st.session_state[sp_edit_key] = next_sp_edit
                                                                     st.rerun()
                                                                 if sp_btn_col2.button("🗑️", key=f"btn_del_sp_{sp_id}", use_container_width=True, help="Delete Spend"):
                                                                     try:
