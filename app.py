@@ -2965,12 +2965,16 @@ elif menu == "📋 Quotation & Planning":
     if "q_form_notes" not in st.session_state: st.session_state["q_form_notes"] = ""
     if "q_form_has_error" not in st.session_state: st.session_state["q_form_has_error"] = False
 
-    if role == "Lead Generator":
-        q_tabs = st.tabs(["📜 Lead Directory"])
+    if role == "Quotation Sender":
+        q_tabs = st.tabs(["📜 Quotation Directory", "⏰ Nearing Expiry & Pending Follow-Ups"])
         q_tab1 = q_tabs[0]
         q_tab2 = None
+        q_tab3 = q_tabs[1]
     else:
-        q_tab1, q_tab2 = st.tabs(["📜 Quotation Directory", "📑 Initial Planning & Justification Tab"])
+        q_tabs = st.tabs(["📜 Quotation Directory", "📑 Initial Planning & Justification Tab", "⏰ Nearing Expiry & Pending Follow-Ups"])
+        q_tab1 = q_tabs[0]
+        q_tab2 = q_tabs[1]
+        q_tab3 = q_tabs[2]
 
     with q_tab1:
         # Expiring Quotation Reminders (> 14 days pending)
@@ -3013,10 +3017,13 @@ elif menu == "📋 Quotation & Planning":
                         q_amt_val = q_amt_default if q_amt_default > 0 else None
                         q_amount = st.number_input("Quotation Amount (PKR)", value=q_amt_val, min_value=0.0, step=5000.0, format="%.0f", placeholder="Enter Quotation Amount (PKR)")
                         q_status = st.selectbox("Quotation Status", ["Sent", "Successful", "Declined"], index=0, help="'Sent' = Only Sent/Pending, 'Successful' = Approved/Won, 'Declined' = Rejected/Lost")
-                        q_date = st.date_input("Date Sent", value=datetime.date.today())
+                        
+                        qd_c1, qd_c2 = st.columns(2)
+                        q_date = qd_c1.date_input("Date Sent", value=datetime.date.today())
+                        q_validity_date = qd_c2.date_input("Validity / Expiry Date", value=datetime.date.today() + datetime.timedelta(days=30))
                         
                         # Lead Generator Allotment
-                        if role == "Lead Generator":
+                        if role == "Quotation Sender":
                             q_lead_gen = current_user["username"]
                         else:
                             st.markdown("**👤 Allot Lead Generator**")
@@ -3260,3 +3267,40 @@ elif menu == "📋 Quotation & Planning":
     if q_tab2:
         with q_tab2:
             render_planning_section(role, current_user, q_df, comp_all_df)
+
+    if q_tab3:
+        with q_tab3:
+            st.markdown("##### ⏰ Nearing Expiry & Pending Follow-Ups Portal")
+            if q_df.empty:
+                st.caption("No quotations logged in database.")
+            else:
+                q_pending_df = q_df[q_df["status"] == "Sent"].copy()
+                if q_pending_df.empty:
+                    st.success("🎉 All pending quotations are cleared and up to date! No pending or expiring quotations.")
+                else:
+                    q_pending_df["sent_dt"] = pd.to_datetime(q_pending_df["created_at"]).dt.date
+                    today_d = datetime.date.today()
+                    q_pending_df["days_pending"] = q_pending_df["sent_dt"].apply(lambda d: (today_d - d).days if d else 0)
+                    q_pending_df = q_pending_df.sort_values("days_pending", ascending=False)
+
+                    st.info(f"📋 **{len(q_pending_df)} Pending Quotation(s)** awaiting decision/approval.")
+
+                    for idx_exp, (_, ex_row) in enumerate(q_pending_df.iterrows(), start=1):
+                        q_ex_id = int(ex_row["id"])
+                        days_p = ex_row["days_pending"]
+                        urgency_badge = f"<span style='color: #ef4444; font-weight: bold;'>⚠️ {days_p} Days Pending (Needs Immediate Follow-up)</span>" if days_p >= 14 else f"<span style='color: #f59e0b;'>⏳ {days_p} Days Pending</span>"
+
+                        with st.container(border=True):
+                            exp_c1, exp_c2, exp_c3 = st.columns([4, 2.5, 2])
+                            exp_c1.markdown(f"**{ex_row['quotation_number']}** — **{ex_row['company_name']}** ({ex_row['project_name']})\n\n<small>Lead Gen: <strong>{ex_row.get('lead_generator') or 'Unassigned'}</strong> | Date Sent: {ex_row['created_at']}</small>", unsafe_allow_html=True)
+                            exp_c2.markdown(f"**PKR {_safe_float(ex_row['amount']):,.0f}**<br/>{urgency_badge}", unsafe_allow_html=True)
+                            
+                            if role in ("CEO", "Accountant"):
+                                ex_b1, ex_b2 = exp_c3.columns(2)
+                                if ex_b1.button("✅ Approve", key=f"app_exp_{q_ex_id}", type="primary", use_container_width=True):
+                                    sb.table("quotations").update({"status": "Successful"}).eq("id", q_ex_id).execute()
+                                    auto_provision_project(str(ex_row['company_name']), str(ex_row['project_name']))
+                                    confirm_and_rerun(f"🎉 Approved quotation '{ex_row['quotation_number']}'.", icon="✅")
+                                if ex_b2.button("❌ Decline", key=f"dec_exp_{q_ex_id}", use_container_width=True):
+                                    sb.table("quotations").update({"status": "Declined"}).eq("id", q_ex_id).execute()
+                                    confirm_warn_and_rerun(f"Declined quotation '{ex_row['quotation_number']}'.", icon="❌")
