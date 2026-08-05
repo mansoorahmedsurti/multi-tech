@@ -2681,18 +2681,12 @@ elif menu == "🛒 Purchase":
         
     st.title("🛒 Purchase Expenses & Procurement Portal")
 
-    pur_tabs = st.tabs(["🛒 Procurement & City Re-Upload", "🛍️ Purchasers Analytics"])
-
-    with pur_tabs[0]:
-        tables = fetch_all_table_data()
-        q_df = tables.get("quotations", pd.DataFrame())
-        if not q_df.empty:
-            q_df = q_df[q_df["status"] == "Successful"]
-        comp_all_df = tables.get("components", pd.DataFrame())
-        render_purchase_procurement_section(role, current_user, q_df, comp_all_df)
-
-    with pur_tabs[1]:
-        render_purchaser_analytics_view(role, current_user)
+    tables = fetch_all_table_data()
+    q_df = tables.get("quotations", pd.DataFrame())
+    if not q_df.empty:
+        q_df = q_df[q_df["status"] == "Successful"]
+    comp_all_df = tables.get("components", pd.DataFrame())
+    render_purchase_procurement_section(role, current_user, q_df, comp_all_df)
 
 # ==============================================================================
 # VIEW C2: VOUCHER WORKFLOW
