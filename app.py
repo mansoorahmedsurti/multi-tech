@@ -120,6 +120,7 @@ def fetch_all_table_data():
         f_components = executor.submit(_fetch_table, "quotation_cost_components")
         f_companies = executor.submit(_fetch_table, "companies", "*", "name", False)
         f_projects = executor.submit(_fetch_table, "projects", "*", "name", False)
+        f_users = executor.submit(_fetch_table, "users", "id, username, role, can_view_dashboard", "username", False)
 
     ledgers_res = f_ledgers.result()
     vouchers_res = f_vouchers.result()
@@ -130,6 +131,7 @@ def fetch_all_table_data():
     components_res = f_components.result()
     companies_res = f_companies.result()
     projects_res = f_projects.result()
+    users_res = f_users.result()
 
     return {
         "ledgers": db.to_df(ledgers_res, columns=["id", "project_id", "type", "title", "cheque_number", "voucher_ref_id", "amount", "created_at"]),
@@ -140,7 +142,8 @@ def fetch_all_table_data():
         "estimates": db.to_df(estimates_res, columns=["id", "quotation_id", "invoice_number", "est_material_cost", "est_labor_cost", "est_overhead_cost", "invoice_amount", "invoice_status", "updated_by", "created_at"]),
         "components": db.to_df(components_res, columns=["id", "quotation_id", "component_name", "price", "description", "actual_price", "purchaser_notes", "purchased_by", "created_by", "created_at"]),
         "companies": db.to_df(companies_res, columns=["id", "name", "site", "description"]),
-        "projects": db.to_df(projects_res, columns=["id", "company_id", "name", "description"])
+        "projects": db.to_df(projects_res, columns=["id", "company_id", "name", "description"]),
+        "users": db.to_df(users_res, columns=["id", "username", "role", "can_view_dashboard"])
     }
 
 def _safe_float(value):
@@ -149,8 +152,9 @@ def _safe_float(value):
     return float(value)
 
 def _invalidate_data_cache():
-    """Targeted cache invalidation — only clears the bulk data fetch, not every cached function."""
+    """Targeted cache invalidation — clears bulk data fetch and user summary cache."""
     fetch_all_table_data.clear()
+    get_all_users_summary.clear()
 
 def confirm_and_rerun(message, icon="✅"):
     """Shows a toast confirmation, clears ONLY the data cache, then reruns."""
@@ -320,7 +324,13 @@ def get_users_by_role(role_name):
         return all_users[all_users["role"].astype(str).str.contains(role_name, case=False, na=False)]["username"].tolist()
     return []
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_all_users_summary():
+    tables = fetch_all_table_data()
+    u_df = tables.get("users", pd.DataFrame())
+    if not u_df.empty and "username" in u_df.columns:
+        return u_df[["id", "username", "role"]].copy()
+    # Fallback: direct DB call if users table missing from bulk fetch
     res = sb.table("users").select("id, username, role").order("username").execute()
     return db.to_df(res, columns=["id", "username", "role"])
 
@@ -511,15 +521,15 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup
     border: none !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:has(input[type="radio"]:checked) {
-    background: linear-gradient(90deg, #eff6ff 0%, #dbeafe 100%) !important;
+    background-color: #eff6ff !important;
+    border: 1px solid #93c5fd !important;
     border-left: 5px solid #2563eb !important;
-    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.18) !important;
-    border-top-right-radius: 6px !important;
-    border-bottom-right-radius: 6px !important;
+    border-radius: 6px !important;
+    box-shadow: 0 1px 3px rgba(37, 99, 235, 0.12) !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:has(input[type="radio"]:checked) p,
 section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:has(input[type="radio"]:checked) span {
-    font-weight: 800 !important;
+    font-weight: 700 !important;
     color: #1e40af !important;
 }
 
@@ -926,6 +936,14 @@ def render_purchase_procurement_section(role, current_user, q_df, comp_all_df):
             if q_comp_df.empty:
                 st.caption("No planned cost items submitted by quotation sender yet.")
             else:
+                # Hoist purchaser user list lookup ONCE for whole page (not per-component)
+                pur_users = get_users_by_role("Purchaser")
+                if not pur_users:
+                    all_u_df = get_all_users_summary()
+                    pur_users = all_u_df["username"].tolist() if not all_u_df.empty else []
+                if current_user["username"] not in pur_users:
+                    pur_users = [current_user["username"]] + pur_users
+
                 for _, comp_row in q_comp_df.iterrows():
                     comp_id = int(comp_row["id"])
                     planned_price = _safe_float(comp_row["price"])
@@ -933,13 +951,6 @@ def render_purchase_procurement_section(role, current_user, q_df, comp_all_df):
                     p_notes_val = str(comp_row.get("purchaser_notes") or "").strip()
                     
                     item_savings = planned_price - actual_price if actual_price > 0 else 0.0
-
-                    pur_users = get_users_by_role("Purchaser")
-                    if not pur_users:
-                        all_u_df = get_all_users_summary()
-                        pur_users = all_u_df["username"].tolist() if not all_u_df.empty else []
-                    if current_user["username"] not in pur_users:
-                        pur_users = [current_user["username"]] + pur_users
                     
                     curr_p_by = comp_row.get("purchased_by") or current_user["username"]
                     p_index = pur_users.index(curr_p_by) if curr_p_by in pur_users else 0
@@ -1051,19 +1062,21 @@ if logo_path:
 
 current_user = st.session_state["user"]
 
-# Live-refresh user record from database so role updates reflect instantly without logout
+# Live-refresh user record from cached data so role updates reflect without logout
 if st.session_state.get("user"):
     u_id = st.session_state["user"].get("id")
     if u_id:
         try:
-            u_res = sb.table("users").select("id, username, password, role, can_view_dashboard").eq("id", u_id).execute()
-            if u_res.data:
-                u_fresh = u_res.data[0]
-                st.session_state["user"] = {
-                    "id": int(u_fresh["id"]), "username": u_fresh["username"],
-                    "role": u_fresh["role"], "can_view_dashboard": bool(u_fresh["can_view_dashboard"])
-                }
-                current_user = st.session_state["user"]
+            _cached_users = fetch_all_table_data().get("users", pd.DataFrame())
+            if not _cached_users.empty:
+                _u_match = _cached_users[_cached_users["id"] == u_id]
+                if not _u_match.empty:
+                    u_fresh = _u_match.iloc[0]
+                    st.session_state["user"] = {
+                        "id": int(u_fresh["id"]), "username": str(u_fresh["username"]),
+                        "role": str(u_fresh["role"]), "can_view_dashboard": bool(u_fresh.get("can_view_dashboard", False))
+                    }
+                    current_user = st.session_state["user"]
         except Exception:
             pass
 
@@ -1125,7 +1138,6 @@ else:
             if item not in menu_options: menu_options.append(item)
 
 menu = st.sidebar.radio("Navigation Workspaces", menu_options, label_visibility="collapsed")
-st.sidebar.markdown(f'<div style="background: linear-gradient(135deg, #1e40af 0%, #1d4ed8 100%); color: #ffffff; padding: 7px 12px; border-radius: 6px; font-weight: 600; font-size: 0.8rem; margin: 10px 0 14px 0; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.15);">📌 Active: <strong>{menu}</strong></div>', unsafe_allow_html=True)
 if st.sidebar.button("🚪 Log out", use_container_width=True):
     st.session_state["user"] = None
     st.rerun()
