@@ -1601,7 +1601,7 @@ elif menu == "💳 Staff Advances":
         st.caption("👁️ Personal Advance Balance and Spendings Breakdown")
     else:
         # CEO or Accountant can see all workers
-        advance_users = get_users_by_role("Advance")
+        advance_users = get_users_by_role("Accountant") + get_users_by_role("Quotation Sender") + get_users_by_role("Lead Generator") + get_users_by_role("Advance")
         active_advances_users = list(adv_all["person_name"].unique()) if not adv_all.empty else []
         target_workers = sorted(list(set(advance_users + active_advances_users)))
         st.caption("📋 Administrative Summary of all Field Worker Cash Allocations")
@@ -2463,7 +2463,12 @@ elif menu == "🏢 Execution(Accounts)":
 
                     def render_advances_tab(pid):
                         # 1. Fetch available advance personas for the selection dropdown
-                        advance_usernames = get_users_by_role("Quotation Sender") or get_users_by_role("Advance") or get_users_by_role("Accountant")
+                        advance_usernames = sorted(list(set(
+                            get_users_by_role("Accountant") + 
+                            get_users_by_role("Quotation Sender") + 
+                            get_users_by_role("Lead Generator") + 
+                            get_users_by_role("Advance")
+                        )))
                         if not advance_usernames:
                             all_u = get_all_users_summary()
                             advance_usernames = all_u["username"].tolist() if not all_u.empty else []
@@ -2620,7 +2625,12 @@ elif menu == "🏢 Execution(Accounts)":
 
                         a_all_adv = tables["advances"]
                         adv_rows = a_all_adv[a_all_adv["project_id"] == pid].sort_values("person_name") if not a_all_adv.empty else pd.DataFrame()
-                        advance_usernames = get_users_by_role("Quotation Sender") or get_users_by_role("Advance") or get_users_by_role("Accountant")
+                        advance_usernames = sorted(list(set(
+                            get_users_by_role("Accountant") + 
+                            get_users_by_role("Quotation Sender") + 
+                            get_users_by_role("Lead Generator") + 
+                            get_users_by_role("Advance")
+                        )))
                         if not advance_usernames:
                             all_u = get_all_users_summary()
                             advance_usernames = all_u["username"].tolist() if not all_u.empty else []
