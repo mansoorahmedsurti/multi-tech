@@ -757,12 +757,44 @@ def render_planning_section(role, current_user, q_df, comp_all_df):
                         c3.markdown("🟡 *Pending Purchaser Quote*")
 
                     if role != "CEO":
-                        if c4.button("🗑️", key=f"del_plan_comp_{comp_id}", help="Delete item"):
+                        c4, c5 = st.columns([0.8, 0.8])
+                        if c4.button("✏️", key=f"edit_plan_comp_btn_{comp_id}", help="Edit item"):
+                            st.session_state[f"edit_plan_comp_{comp_id}"] = not st.session_state.get(f"edit_plan_comp_{comp_id}", False)
+                            st.rerun()
+
+                        if c5.button("🗑️", key=f"del_plan_comp_{comp_id}", help="Delete item"):
                             try:
                                 sb.table("quotation_cost_components").delete().eq("id", comp_id).execute()
                                 confirm_warn_and_rerun(f"Removed component '{comp_row['component_name']}'.", icon="🗑️")
                             except Exception as e:
                                 st.error(f"Error removing item: {e}")
+
+                    if st.session_state.get(f"edit_plan_comp_{comp_id}", False) and role != "CEO":
+                        with st.form(f"form_edit_comp_{comp_id}"):
+                            ec1, ec2 = st.columns([3, 2])
+                            e_cname = ec1.text_input("Component Name*", value=comp_row["component_name"])
+                            e_cprice = ec2.number_input("Planned Price (PKR)*", min_value=0.0, step=500.0, value=planned_p)
+                            e_cdesc = st.text_area("Remarks / Notes / Specs", value=str(comp_row.get("description") or ""), height=40)
+                            es1, es2 = st.columns(2)
+                            save_comp = es1.form_submit_button("💾 Save", type="primary", use_container_width=True)
+                            cancel_comp = es2.form_submit_button("✖️ Cancel", use_container_width=True)
+                            if save_comp:
+                                if e_cname.strip() and e_cprice > 0:
+                                    try:
+                                        sb.table("quotation_cost_components").update({
+                                            "component_name": e_cname.strip(),
+                                            "price": float(e_cprice),
+                                            "description": e_cdesc.strip() or None
+                                        }).eq("id", comp_id).execute()
+                                        st.session_state[f"edit_plan_comp_{comp_id}"] = False
+                                        confirm_and_rerun(f"✏️ Updated component '{e_cname.strip()}'.", icon="💾")
+                                    except Exception as e:
+                                        st.error(f"Cannot update component: {e}")
+                                else:
+                                    st.error("Please enter a valid component name and non-zero price.")
+                            if cancel_comp:
+                                st.session_state[f"edit_plan_comp_{comp_id}"] = False
+                                st.rerun()
 
             if role != "CEO":
                 st.markdown("---")
@@ -1917,10 +1949,9 @@ elif menu == "🏢 Execution(Accounts)":
                                 <button class="btn-print" onclick="window.print()">🖨️ Print Report / Save PDF</button>
                                 <div class="header-box">
                                     <div style="display: flex; align-items: center; gap: 14px;">
-                                        {f'<img src="{logo_b64}" style="max-height: 52px; width: auto; object-fit: contain;" />' if logo_b64 else ''}
+                                        {f'<img src="{logo_b64}" style="max-height: 58px; width: auto; object-fit: contain;" />' if logo_b64 else ''}
                                         <div>
-                                            <div class="title">Multi Tech Engineering Group</div>
-                                            <div class="subtitle">Project Financial Audit & Component Summary Report</div>
+                                            <div class="subtitle" style="font-size: 1rem; font-weight: 700; color: #1e3a8a;">Project Financial Audit & Component Summary Report</div>
                                         </div>
                                     </div>
                                     <div style="text-align: right;">
@@ -2661,12 +2692,19 @@ elif menu == "🎫 Voucher":
 
         def render_voucher_with_edit(r, idx):
             st.markdown(draw_voucher_ui_node(r, idx), unsafe_allow_html=True)
-            can_edit = (r["created_by"] == current_user["username"]) and (str(r["status"]) in ("Pending", "To Be Discussed"))
+            can_edit = (role in ("CEO", "Accountant") or r["created_by"] == current_user["username"]) and (str(r["status"]) in ("Pending", "To Be Discussed"))
             if can_edit:
+                eb1, eb2 = st.columns(2)
                 edit_key = f"edit_voucher_{int(r['id'])}"
-                if st.button("✏️ Edit Request", key=f"btn_{edit_key}", use_container_width=True):
+                if eb1.button("✏️ Edit Request", key=f"btn_{edit_key}", use_container_width=True):
                     st.session_state[edit_key] = not st.session_state.get(edit_key, False)
                     st.rerun()
+                if eb2.button("🗑️ Delete Request", key=f"del_voucher_{int(r['id'])}", use_container_width=True):
+                    try:
+                        sb.table("vouchers").delete().eq("id", int(r['id'])).execute()
+                        confirm_warn_and_rerun(f"Deleted voucher request '{r['title']}'.", icon="🗑️")
+                    except Exception as e:
+                        st.error(f"Cannot delete voucher: {e}")
 
                 if st.session_state.get(edit_key, False):
                     with st.form(f"form_{edit_key}"):
