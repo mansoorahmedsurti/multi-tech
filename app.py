@@ -1309,13 +1309,344 @@ if st.sidebar.button("🚪 Log out", use_container_width=True):
 # VIEW A: MAIN EXECUTIVE DATE-FILTERED DASHBOARD
 # ==============================================================================
 
+def render_monthly_report_view():
+    st.subheader("📅 Monthly Financial Ledger Report")
+    
+    # 1. Fetch tables
+    tables = fetch_all_table_data()
+    ledgers_df = tables["ledgers"].copy()
+    advances_df = tables["advances"].copy()
+    spends_df = tables["spends"].copy()
+    companies_df = tables["companies"].copy()
+    projects_df = tables["projects"].copy()
+    
+    # Build dictionaries for easy lookups
+    proj_map = {}
+    if not projects_df.empty:
+        for _, p_r in projects_df.iterrows():
+            try:
+                p_id = int(p_r["id"])
+                proj_map[p_id] = {
+                    "name": p_r["name"],
+                    "company_id": int(p_r["company_id"]) if p_r.get("company_id") and not pd.isna(p_r["company_id"]) else None
+                }
+            except Exception:
+                pass
+                
+    comp_map = {}
+    if not companies_df.empty:
+        for _, c_r in companies_df.iterrows():
+            try:
+                c_id = int(c_r["id"])
+                comp_map[c_id] = c_r["name"]
+            except Exception:
+                pass
+                
+    adv_map = {}
+    if not advances_df.empty:
+        for _, a_r in advances_df.iterrows():
+            try:
+                adv_id = int(a_r["id"])
+                adv_map[adv_id] = {
+                    "person_name": a_r["person_name"],
+                    "project_id": int(a_r["project_id"]) if a_r.get("project_id") and not pd.isna(a_r["project_id"]) else None
+                }
+            except Exception:
+                pass
+
+    # 2. Extract unique months for selection
+    months_set = set()
+    current_month_str = datetime.date.today().strftime("%B %Y")
+    months_set.add(current_month_str)
+    
+    def get_month_year_str(val):
+        if val is None or pd.isna(val):
+            return None
+        try:
+            dt = pd.to_datetime(val)
+            return dt.strftime("%B %Y")
+        except Exception:
+            return None
+            
+    if not ledgers_df.empty:
+        for val in ledgers_df["created_at"]:
+            m_str = get_month_year_str(val)
+            if m_str:
+                months_set.add(m_str)
+                
+    if not spends_df.empty:
+        for val in spends_df["created_at"]:
+            m_str = get_month_year_str(val)
+            if m_str:
+                months_set.add(m_str)
+                
+    month_options = sorted(list(months_set), key=lambda x: datetime.datetime.strptime(x, "%B %Y"), reverse=True)
+    
+    sc1, sc2 = st.columns([6, 4])
+    sel_month = sc1.selectbox("Choose Month", month_options, index=0, key="report_month_selectbox")
+    
+    # 3. Filter entries by month
+    sel_dt = datetime.datetime.strptime(sel_month, "%B %Y")
+    sel_year = sel_dt.year
+    sel_month_num = sel_dt.month
+    
+    filt_ledgers = []
+    if not ledgers_df.empty:
+        for _, l_r in ledgers_df.iterrows():
+            try:
+                l_dt = pd.to_datetime(l_r["created_at"])
+                if l_dt.year == sel_year and l_dt.month == sel_month_num:
+                    filt_ledgers.append(l_r.to_dict())
+            except Exception:
+                pass
+                
+    filt_spends = []
+    if not spends_df.empty:
+        for _, s_r in spends_df.iterrows():
+            try:
+                s_dt = pd.to_datetime(s_r["created_at"])
+                if s_dt.year == sel_year and s_dt.month == sel_month_num:
+                    filt_spends.append(s_r.to_dict())
+            except Exception:
+                pass
+
+    # Print action button
+    print_triggered = sc2.button("🖨️ Print Report", use_container_width=True, type="primary")
+
+    # Inject print styling (always present, but only takes effect on window.print())
+    st.markdown("""
+        <style>
+        @media print {
+            /* Hide Streamlit sidebar, top navigation, parameters selectboxes, and footer */
+            section[data-testid="stSidebar"],
+            header,
+            footer,
+            div[data-testid="stHeader"],
+            div.stButton,
+            div[data-testid="stElementToolbar"],
+            iframe {
+                display: none !important;
+            }
+            /* Reset Block Container Padding and Max-Width */
+            div.block-container {
+                padding-top: 1rem !important;
+                padding-bottom: 1rem !important;
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                max-width: 100% !important;
+            }
+            /* Clean table formatting for paper */
+            table {
+                width: 100% !important;
+                border-collapse: collapse !important;
+            }
+            th, td {
+                border: 1px solid #cbd5e1 !important;
+                padding: 6px 8px !important;
+                font-size: 10pt !important;
+            }
+            h1, h2, h3, h4, h5 {
+                color: #000000 !important;
+                font-family: Arial, sans-serif !important;
+                page-break-after: avoid;
+            }
+            /* Avoid breaking in the middle of a project/company block */
+            div.company-print-block, div.project-print-block {
+                page-break-inside: avoid !important;
+            }
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    if print_triggered:
+        st.components.v1.html("""
+            <script>
+                parent.window.print();
+            </script>
+        """, height=0, width=0)
+
+    # 4. Group data
+    grouped_data = {}
+    
+    def get_company_project_for_pid(p_id):
+        p_id = int(p_id) if p_id is not None else None
+        p_info = proj_map.get(p_id) if p_id else None
+        p_name = p_info["name"] if p_info else "General Workspace"
+        c_id = p_info["company_id"] if p_info else None
+        c_name = comp_map.get(c_id) if c_id else "General Workspace"
+        return c_name, p_name
+
+    # Monthly wide totals
+    total_income = 0.0
+    total_expense = 0.0
+    total_loans = 0.0
+
+    # Process Ledgers
+    for l in filt_ledgers:
+        pid = int(l["project_id"]) if l.get("project_id") and not pd.isna(l["project_id"]) else None
+        c_name, p_name = get_company_project_for_pid(pid)
+        
+        if c_name not in grouped_data:
+            grouped_data[c_name] = {}
+        if p_name not in grouped_data[c_name]:
+            grouped_data[c_name][p_name] = []
+            
+        amt = _safe_float(l["amount"])
+        l_type = l["type"]
+        if l_type == "income":
+            total_income += amt
+        elif l_type == "expense":
+            total_expense += amt
+        elif l_type == "loan":
+            total_loans += amt
+            
+        grouped_data[c_name][p_name].append({
+            "date": pd.to_datetime(l["created_at"]).strftime("%Y-%m-%d"),
+            "type": l_type.upper(),
+            "title": l["title"],
+            "cheque": l.get("cheque_number") or "—",
+            "amount": amt
+        })
+
+    # Process Spends
+    for s in filt_spends:
+        adv_id = int(s["advance_id"]) if s.get("advance_id") and not pd.isna(s["advance_id"]) else None
+        adv_info = adv_map.get(adv_id) if adv_id else None
+        pid = adv_info["project_id"] if adv_info else None
+        c_name, p_name = get_company_project_for_pid(pid)
+        person = adv_info["person_name"] if adv_info else "Staff"
+        
+        if c_name not in grouped_data:
+            grouped_data[c_name] = {}
+        if p_name not in grouped_data[c_name]:
+            grouped_data[c_name][p_name] = []
+            
+        amt = _safe_float(s["amount_spent"])
+        total_expense += amt
+        
+        grouped_data[c_name][p_name].append({
+            "date": pd.to_datetime(s["created_at"]).strftime("%Y-%m-%d"),
+            "type": "SPEND",
+            "title": f"{s['item_name']} (Staff: {person})",
+            "cheque": "—",
+            "amount": amt
+        })
+
+    # Display overall monthly metrics card
+    st.markdown("### 🏢 Multi Tech Engineering Group")
+    st.markdown(f"##### Monthly Financial Summary — **{sel_month}**")
+    
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Monthly Income", f"PKR {total_income:,.0f}")
+    mc2.metric("Monthly Outflow / Spends", f"PKR {total_expense:,.0f}")
+    mc3.metric("Capital Infusions (Loans)", f"PKR {total_loans:,.0f}")
+    net_change = total_income + total_loans - total_expense
+    mc4.metric("Net Flow", f"PKR {net_change:,.0f}")
+    
+    st.write("---")
+
+    if not grouped_data:
+        st.info(f"No transactions recorded for {sel_month}.")
+        return
+
+    # Render data grouped by Company and Project
+    for c_name, projects_dict in sorted(grouped_data.items()):
+        # Calculate Company-wide Subtotals
+        c_income = 0.0
+        c_expense = 0.0
+        c_loans = 0.0
+        for p_name, tx_list in projects_dict.items():
+            for tx in tx_list:
+                amt = tx["amount"]
+                txtype = tx["type"]
+                if txtype == "INCOME":
+                    c_income += amt
+                elif txtype in ("EXPENSE", "SPEND"):
+                    c_expense += amt
+                elif txtype == "LOAN":
+                    c_loans += amt
+
+        # Company Header Box
+        st.markdown(f"<div class='company-print-block'>", unsafe_allow_html=True)
+        st.markdown(f"#### 🏢 Company: **{c_name}**")
+        st.markdown(
+            f"**Company Subtotals** | "
+            f"Income: <span style='color:#10B981;'>PKR {c_income:,.0f}</span> | "
+            f"Expense/Spends: <span style='color:#EF4444;'>PKR {c_expense:,.0f}</span> | "
+            f"Loans: <span style='color:#3B82F6;'>PKR {c_loans:,.0f}</span>",
+            unsafe_allow_html=True
+        )
+        
+        for p_name, tx_list in sorted(projects_dict.items()):
+            # Calculate Project Subtotals
+            p_income = 0.0
+            p_expense = 0.0
+            p_loans = 0.0
+            for tx in tx_list:
+                amt = tx["amount"]
+                txtype = tx["type"]
+                if txtype == "INCOME":
+                    p_income += amt
+                elif txtype in ("EXPENSE", "SPEND"):
+                    p_expense += amt
+                elif txtype == "LOAN":
+                    p_loans += amt
+
+            # Project Subheader Box
+            st.markdown(f"<div class='project-print-block' style='margin-left: 20px; margin-top: 15px;'>", unsafe_allow_html=True)
+            st.markdown(f"##### 📁 Project: **{p_name}**")
+            
+            # Sort transaction entries by date
+            tx_list_sorted = sorted(tx_list, key=lambda x: x["date"])
+            
+            # Build DataFrame for display
+            df_rows = []
+            for idx, tx in enumerate(tx_list_sorted, 1):
+                df_rows.append({
+                    "Date": tx["date"],
+                    "Type": tx["type"],
+                    "Description": tx["title"],
+                    "Cheque / Reference": tx["cheque"],
+                    "Amount (PKR)": f"PKR {tx['amount']:,.0f}"
+                })
+            
+            p_df = pd.DataFrame(df_rows)
+            st.table(p_df)
+            
+            st.markdown(
+                f"<p style='font-size:0.9rem; font-weight:600; text-align:right; margin-top:-10px; margin-bottom:15px;'>"
+                f"Project Subtotals &rarr; Inflow: <span style='color:#10B981;'>PKR {p_income:,.0f}</span> | "
+                f"Outflow: <span style='color:#EF4444;'>PKR {p_expense:,.0f}</span> | "
+                f"Loan: <span style='color:#3B82F6;'>PKR {p_loans:,.0f}</span>"
+                f"</p>",
+                unsafe_allow_html=True
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.write("---")
+
 if menu == "📊 Dashboard":
     if role not in ("CEO", "Accountant") or not current_user.get("can_view_dashboard", True):
         st.error("🔒 Unauthorized: Access to executive dashboard scopes restricted.")
         st.stop()
 
-    st.title("📊 Financial Scope Overview")
-    time_filter = st.selectbox("Statistics Scope Range", ["All Time", "Today", "This Month", "Last 30 Days"])
+    if "show_monthly_report" not in st.session_state:
+        st.session_state["show_monthly_report"] = False
+
+    t_col1, t_col2 = st.columns([7, 3])
+    t_col2_btn_lbl = "📈 Back to Dashboard" if st.session_state["show_monthly_report"] else "📅 Monthly Report"
+    
+    if t_col2.button(t_col2_btn_lbl, key="toggle_monthly_report", use_container_width=True):
+        st.session_state["show_monthly_report"] = not st.session_state["show_monthly_report"]
+        st.rerun()
+
+    if st.session_state["show_monthly_report"]:
+        t_col1.title("📅 Monthly Ledger Report")
+        render_monthly_report_view()
+    else:
+        t_col1.title("📊 Financial Scope Overview")
+        time_filter = st.selectbox("Statistics Scope Range", ["All Time", "Today", "This Month", "Last 30 Days"])
 
     today = datetime.date.today()
     date_limit = None
