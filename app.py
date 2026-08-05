@@ -689,28 +689,38 @@ div[data-baseweb="calendar"] button:hover {
     background-color: #f3f4f6 !important;
 }
 
-/* Multiselect Badge / Tag Light High-Contrast Styling */
-div[data-testid="stMultiSelect"] span[data-baseweb="tag"],
-div[data-testid="stMultiSelect"] div[data-baseweb="tag"],
-span[data-baseweb="tag"], 
-div[data-baseweb="tag"] {
-    background-color: #e2e8f0 !important;
-    border: 1px solid #94a3b8 !important;
-    border-radius: 4px !important;
-    color: #0f172a !important;
+/* Multiselect Badge / Tag Vibrant High-Contrast Styling */
+[data-baseweb="tag"],
+[data-baseweb="tag"] *,
+div[data-baseweb="tag"],
+span[data-baseweb="tag"],
+div[data-testid="stMultiSelect"] [data-baseweb="tag"],
+div[data-testid="stMultiSelect"] [data-baseweb="tag"] * {
+    background-color: #2563eb !important;
+    background: #2563eb !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 6px !important;
 }
-div[data-testid="stMultiSelect"] span[data-baseweb="tag"] *,
-div[data-testid="stMultiSelect"] div[data-baseweb="tag"] *,
-span[data-baseweb="tag"] *, 
-div[data-baseweb="tag"] * {
-    color: #0f172a !important;
-    fill: #0f172a !important;
+
+[data-baseweb="tag"] span,
+[data-baseweb="tag"] div,
+[data-baseweb="tag"] p {
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    font-size: 0.88rem !important;
 }
-div[data-testid="stMultiSelect"] span[data-baseweb="tag"] svg,
-div[data-testid="stMultiSelect"] div[data-baseweb="tag"] svg,
-span[data-baseweb="tag"] svg,
-div[data-baseweb="tag"] svg {
-    fill: #334155 !important;
+
+[data-baseweb="tag"] [role="button"],
+[data-baseweb="tag"] svg,
+[data-baseweb="tag"] path {
+    fill: #ffffff !important;
+    color: #ffffff !important;
+    stroke: #ffffff !important;
+}
+
+[data-baseweb="tag"] [role="button"]:hover {
+    background-color: #1d4ed8 !important;
 }
 
 /* Toast, Modals, Dialogs, Tooltips, Popovers Grayscale Color Overrides */
