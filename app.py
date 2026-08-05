@@ -753,7 +753,7 @@ def render_planning_section(role, current_user, q_df, comp_all_df):
         ]
 
     if disp_p_df.empty:
-        st.warning("No quotations found matching the filter criteria.")
+        st.info("ℹ️ **Only Approved ('Successful') Quotations Enter Initial Planning.** No approved quotations match the selected filters. Once a quotation is approved, it will automatically appear here for itemized cost planning.")
         return
 
     for idx, q_row in disp_p_df.iterrows():
