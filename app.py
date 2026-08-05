@@ -506,14 +506,16 @@ section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup
     border: none !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:has(input[type="radio"]:checked) {
-    background-color: #e5e7eb !important;
-    border-left: none !important;
-    border: none !important;
+    background: linear-gradient(90deg, #eff6ff 0%, #dbeafe 100%) !important;
+    border-left: 5px solid #2563eb !important;
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.18) !important;
+    border-top-right-radius: 6px !important;
+    border-bottom-right-radius: 6px !important;
 }
 section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:has(input[type="radio"]:checked) p,
 section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:has(input[type="radio"]:checked) span {
-    font-weight: 700 !important;
-    color: #111111 !important;
+    font-weight: 800 !important;
+    color: #1e40af !important;
 }
 
 /* Popover */
@@ -852,19 +854,21 @@ def render_purchaser_analytics_view(role, current_user):
                         st.caption(f"Project Subtotal: Planned PKR {g_planned:,.0f} | Actual PKR {g_actual:,.0f} | Savings: **PKR {g_savings:,.0f}**")
 
                         group_rows = []
-                        for _, i_row in group_df.iterrows():
-                            pl_price = _safe_float(i_row["price"])
-                            ac_price = _safe_float(i_row["actual_price"])
+                        for idx_num, i_row in enumerate(group_df.iterrows(), start=1):
+                            _, row_data = i_row
+                            pl_price = _safe_float(row_data["price"])
+                            ac_price = _safe_float(row_data["actual_price"])
                             i_sav = pl_price - ac_price if ac_price > 0 else 0.0
                             
                             group_rows.append({
-                                "Item Description": i_row.get("component_name", ""),
+                                "#": idx_num,
+                                "Item Description": row_data.get("component_name", ""),
                                 "Quoted Planned Price": f"PKR {pl_price:,.0f}",
                                 "Actual City Price": f"PKR {ac_price:,.0f}" if ac_price > 0 else "🟡 Pending",
                                 "Net Savings / (Overrun)": f"PKR {i_sav:,.0f}" if ac_price > 0 else "—",
-                                "Supplier Notes": i_row.get("purchaser_notes") or "—"
+                                "Supplier Notes": row_data.get("purchaser_notes") or "—"
                             })
-                        st.dataframe(pd.DataFrame(group_rows), use_container_width=True)
+                        st.dataframe(pd.DataFrame(group_rows), hide_index=True, use_container_width=True)
                         st.write("---")
 
 def render_purchase_procurement_section(role, current_user, q_df, comp_all_df):
@@ -1111,6 +1115,7 @@ else:
             if item not in menu_options: menu_options.append(item)
 
 menu = st.sidebar.radio("Navigation Workspaces", menu_options, label_visibility="collapsed")
+st.sidebar.markdown(f'<div style="background: linear-gradient(135deg, #1e40af 0%, #1d4ed8 100%); color: #ffffff; padding: 7px 12px; border-radius: 6px; font-weight: 600; font-size: 0.8rem; margin: 10px 0 14px 0; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.15);">📌 Active: <strong>{menu}</strong></div>', unsafe_allow_html=True)
 if st.sidebar.button("🚪 Log out", use_container_width=True):
     st.session_state["user"] = None
     st.rerun()
@@ -1221,7 +1226,8 @@ if menu == "📊 Dashboard":
             disp_succ = succ_q_df[["quotation_number", "company_name", "project_name", "lead_generator", "amount", "created_at"]].copy()
             disp_succ.columns = ["Quotation #", "Company Name", "Project Name", "Lead Generator", "Amount (PKR)", "Date Sent"]
             disp_succ["Amount (PKR)"] = disp_succ["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
-            st.dataframe(disp_succ, use_container_width=True)
+            disp_succ.insert(0, "#", range(1, len(disp_succ) + 1))
+            st.dataframe(disp_succ, hide_index=True, use_container_width=True)
 
     with q_dash_tabs[1]:
         if sent_q_df.empty:
@@ -1230,7 +1236,8 @@ if menu == "📊 Dashboard":
             disp_sent = sent_q_df[["quotation_number", "company_name", "project_name", "lead_generator", "amount", "created_at"]].copy()
             disp_sent.columns = ["Quotation #", "Company Name", "Project Name", "Lead Generator", "Amount (PKR)", "Date Sent"]
             disp_sent["Amount (PKR)"] = disp_sent["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
-            st.dataframe(disp_sent, use_container_width=True)
+            disp_sent.insert(0, "#", range(1, len(disp_sent) + 1))
+            st.dataframe(disp_sent, hide_index=True, use_container_width=True)
 
     with q_dash_tabs[2]:
         if declined_q_df.empty:
@@ -1239,7 +1246,8 @@ if menu == "📊 Dashboard":
             disp_dec = declined_q_df[["quotation_number", "company_name", "project_name", "lead_generator", "amount", "created_at"]].copy()
             disp_dec.columns = ["Quotation #", "Company Name", "Project Name", "Lead Generator", "Amount (PKR)", "Date Sent"]
             disp_dec["Amount (PKR)"] = disp_dec["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
-            st.dataframe(disp_dec, use_container_width=True)
+            disp_dec.insert(0, "#", range(1, len(disp_dec) + 1))
+            st.dataframe(disp_dec, hide_index=True, use_container_width=True)
 
     with q_dash_tabs[3]:
         if q_df.empty:
@@ -1276,7 +1284,9 @@ if menu == "📊 Dashboard":
                     "Win Rate %": f"{lg_win_rate:.1f}%"
                 })
 
-            st.dataframe(pd.DataFrame(lg_summary_rows), use_container_width=True)
+            lg_df_out = pd.DataFrame(lg_summary_rows)
+            lg_df_out.insert(0, "#", range(1, len(lg_df_out) + 1))
+            st.dataframe(lg_df_out, hide_index=True, use_container_width=True)
 
     st.markdown("---")
     st.markdown(f"### 🛒 Overall Purchase & Procurement Overview ({time_filter})")
@@ -1345,7 +1355,9 @@ if menu == "📊 Dashboard":
                         "Net Money Saved": f"PKR {p_u_savings:,.0f}",
                         "Savings %": f"{p_u_pct:.1f}%"
                     })
-                st.dataframe(pd.DataFrame(pur_summary_rows), use_container_width=True)
+                pur_df_out = pd.DataFrame(pur_summary_rows)
+                pur_df_out.insert(0, "#", range(1, len(pur_df_out) + 1))
+                st.dataframe(pur_df_out, hide_index=True, use_container_width=True)
 
         with p_dash_tabs[1]:
             if p_reuploaded.empty:
@@ -1357,7 +1369,8 @@ if menu == "📊 Dashboard":
                 disp_reup["Purchase Amount (PKR)"] = disp_reup["Purchase Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
                 disp_reup["Savings (PKR)"] = disp_reup["Savings (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
                 disp_reup["Notes"] = disp_reup["Notes"].fillna("—")
-                st.dataframe(disp_reup, use_container_width=True)
+                disp_reup.insert(0, "#", range(1, len(disp_reup) + 1))
+                st.dataframe(disp_reup, hide_index=True, use_container_width=True)
 
         with p_dash_tabs[2]:
             if p_pending.empty:
@@ -1367,7 +1380,8 @@ if menu == "📊 Dashboard":
                 disp_pend.columns = ["Quotation #", "Company Name", "Project Name", "Item Description", "Planned Budget (PKR)", "Sender Notes"]
                 disp_pend["Planned Budget (PKR)"] = disp_pend["Planned Budget (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
                 disp_pend["Sender Notes"] = disp_pend["Sender Notes"].fillna("—")
-                st.dataframe(disp_pend, use_container_width=True)
+                disp_pend.insert(0, "#", range(1, len(disp_pend) + 1))
+                st.dataframe(disp_pend, hide_index=True, use_container_width=True)
 
 # ==============================================================================
 # VIEW G: STAFF ADVANCES REPORTING SCOPE
@@ -1797,12 +1811,12 @@ elif menu == "🏢 Execution(Accounts)":
 
                                 st.markdown("##### 📝 Planned Cost Justifications")
                                 if not q_components_df.empty:
-                                    st.dataframe(q_components_df[["component_name", "price", "description", "created_by"]].rename(columns={
-                                        "component_name": "Component Title",
-                                        "price": "Planned Price (PKR)",
-                                        "description": "Notes / Specs",
-                                        "created_by": "Quoted By"
-                                    }), use_container_width=True)
+                                    disp_qc = q_components_df[["component_name", "price", "description", "created_by"]].copy()
+                                    disp_qc.columns = ["Component Title", "Planned Price (PKR)", "Notes / Specs", "Quoted By"]
+                                    disp_qc["Planned Price (PKR)"] = disp_qc["Planned Price (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+                                    disp_qc["Notes / Specs"] = disp_qc["Notes / Specs"].fillna("—")
+                                    disp_qc.insert(0, "#", range(1, len(disp_qc) + 1))
+                                    st.dataframe(disp_qc, hide_index=True, use_container_width=True)
                                     st.info(f"Total Quoted Planned Cost: **PKR {planned_cost_total:,.0f}** | Execution Cost Variance: **PKR {cost_variance:,.0f}** " + ("(🟢 Under Budget)" if cost_variance >= 0 else "(🔴 Over Budget)"))
                                 else:
                                     st.caption("No itemized cost justification components logged in quotation.")
@@ -1812,11 +1826,12 @@ elif menu == "🏢 Execution(Accounts)":
                         with sum_t2:
                             st.markdown("##### 🟢 All Client Payment Inflows Received")
                             if not inc_data.empty:
-                                st.dataframe(inc_data[["title", "amount", "cheque_number"]].rename(columns={
-                                    "title": "Payment Description",
-                                    "amount": "Amount Received (PKR)",
-                                    "cheque_number": "Cheque / Reference #"
-                                }), use_container_width=True)
+                                disp_inc = inc_data[["title", "amount", "cheque_number"]].copy()
+                                disp_inc.columns = ["Payment Description", "Amount Received (PKR)", "Cheque / Reference #"]
+                                disp_inc["Amount Received (PKR)"] = disp_inc["Amount Received (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+                                disp_inc["Cheque / Reference #"] = disp_inc["Cheque / Reference #"].fillna("—")
+                                disp_inc.insert(0, "#", range(1, len(disp_inc) + 1))
+                                st.dataframe(disp_inc, hide_index=True, use_container_width=True)
                             else:
                                 st.caption("No income receipts logged yet.")
 
@@ -1826,15 +1841,21 @@ elif menu == "🏢 Execution(Accounts)":
                             with sum_col1:
                                 st.markdown("**Direct Project Expenses**")
                                 if not exp_data.empty:
-                                    st.dataframe(exp_data[["title", "amount"]].rename(columns={"title": "Expense Title", "amount": "Amount (PKR)"}), use_container_width=True)
+                                    disp_exp = exp_data[["title", "amount"]].copy()
+                                    disp_exp.columns = ["Expense Title", "Amount (PKR)"]
+                                    disp_exp["Amount (PKR)"] = disp_exp["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+                                    disp_exp.insert(0, "#", range(1, len(disp_exp) + 1))
+                                    st.dataframe(disp_exp, hide_index=True, use_container_width=True)
                                 else:
                                     st.caption("No direct expenses logged.")
                             with sum_col2:
                                 st.markdown("**Approved Vouchers Payouts**")
                                 if not p_vouchers_df.empty:
-                                    st.dataframe(p_vouchers_df[["voucher_number", "title", "amount", "type"]].rename(columns={
-                                        "voucher_number": "Voucher #", "title": "Title", "amount": "Amount (PKR)", "type": "Department"
-                                    }), use_container_width=True)
+                                    disp_v = p_vouchers_df[["voucher_number", "title", "amount", "type"]].copy()
+                                    disp_v.columns = ["Voucher #", "Title", "Amount (PKR)", "Department"]
+                                    disp_v["Amount (PKR)"] = disp_v["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+                                    disp_v.insert(0, "#", range(1, len(disp_v) + 1))
+                                    st.dataframe(disp_v, hide_index=True, use_container_width=True)
                                 else:
                                     st.caption("No approved vouchers linked.")
 
@@ -1849,17 +1870,21 @@ elif menu == "🏢 Execution(Accounts)":
                                     w_alloc = float(a_row["allocated_amount"])
                                     adv_summary_rows.append({
                                         "Field Worker": a_row["person_name"],
-                                        "Allocated (PKR)": w_alloc,
-                                        "Spent Logged (PKR)": w_spent,
-                                        "Unspent Balance (PKR)": w_alloc - w_spent
+                                        "Allocated (PKR)": f"PKR {w_alloc:,.0f}",
+                                        "Spent Logged (PKR)": f"PKR {w_spent:,.0f}",
+                                        "Unspent Balance (PKR)": f"PKR {(w_alloc - w_spent):,.0f}"
                                     })
-                                st.dataframe(pd.DataFrame(adv_summary_rows), use_container_width=True)
+                                disp_adv = pd.DataFrame(adv_summary_rows)
+                                disp_adv.insert(0, "#", range(1, len(disp_adv) + 1))
+                                st.dataframe(disp_adv, hide_index=True, use_container_width=True)
 
                                 if not p_spends_df.empty:
                                     st.markdown("**Itemized Field Spend Receipts**")
-                                    st.dataframe(p_spends_df[["item_name", "amount_spent"]].rename(columns={
-                                        "item_name": "Item Description", "amount_spent": "Amount (PKR)"
-                                    }), use_container_width=True)
+                                    disp_sp = p_spends_df[["item_name", "amount_spent"]].copy()
+                                    disp_sp.columns = ["Item Description", "Amount (PKR)"]
+                                    disp_sp["Amount (PKR)"] = disp_sp["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+                                    disp_sp.insert(0, "#", range(1, len(disp_sp) + 1))
+                                    st.dataframe(disp_sp, hide_index=True, use_container_width=True)
                             else:
                                 st.caption("No staff field advances provisioned for this project.")
 
