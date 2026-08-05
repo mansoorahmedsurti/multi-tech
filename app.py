@@ -1951,7 +1951,29 @@ elif menu == "🏢 Execution(Accounts)":
                     # ==========================================
                     # END-TO-END PROJECT AUDIT & SUMMARY EXPANDER
                     # ==========================================
-                    with st.expander("📊 End-to-End Project Audit & Summary (Quotation to Execution)", expanded=False):
+                    sub_projs_df = projects_df[projects_df["name"].str.startswith(f"{active_project_row['name']} → ")] if not projects_df.empty else pd.DataFrame()
+                    sub_scope_options = ["📊 Combined Main Project Scope"]
+                    if not sub_projs_df.empty:
+                        for _, sp_row in sub_projs_df.iterrows():
+                            clean_sp_name = sp_row["name"].replace(f"{active_project_row['name']} → ", "").strip()
+                            sub_scope_options.append(f"🏗️ Sub-Project: {clean_sp_name}")
+
+                    selected_audit_scope = st.selectbox("🎯 Select Audit Scope / Sub-Project", sub_scope_options, key=f"audit_scope_sel_{pid}")
+                    is_sub_scope = selected_audit_scope != "📊 Combined Main Project Scope"
+                    chosen_sub_title = selected_audit_scope.replace("🏗️ Sub-Project: ", "").strip() if is_sub_scope else None
+
+                    audit_exp_label = f"📊 End-to-End Audit & Summary — Sub-Project: {chosen_sub_title}" if is_sub_scope else "📊 End-to-End Project Audit & Summary (Quotation to Execution)"
+
+                    with st.expander(audit_exp_label, expanded=False):
+                        # Filter ledgers by sub-project scope if selected
+                        if is_sub_scope and chosen_sub_title:
+                            exp_audit_df = exp_data[exp_data["title"].str.contains(f"[{chosen_sub_title}]", regex=False)] if not exp_data.empty else pd.DataFrame()
+                            inc_audit_df = inc_data[inc_data["title"].str.contains(f"[{chosen_sub_title}]", regex=False)] if not inc_data.empty else pd.DataFrame()
+                            loan_audit_df = loan_data[loan_data["title"].str.contains(f"[{chosen_sub_title}]", regex=False)] if not loan_data.empty else pd.DataFrame()
+                        else:
+                            exp_audit_df = exp_data
+                            inc_audit_df = inc_data
+                            loan_audit_df = loan_data
                         # 1. Quotation Lookup
                         all_q_df = tables.get("quotations", pd.DataFrame())
                         q_match = pd.DataFrame()
@@ -1975,9 +1997,9 @@ elif menu == "🏢 Execution(Accounts)":
                         quoted_val = float(q_row["amount"]) if q_row is not None else 0.0
 
                         # 2. Execution Totals
-                        tot_income = float(inc_data["amount"].sum()) if not inc_data.empty else 0.0
-                        tot_expense = float(exp_data["amount"].sum()) if not exp_data.empty else 0.0
-                        tot_loan = float(loan_data["amount"].sum()) if not loan_data.empty else 0.0
+                        tot_income = float(inc_audit_df["amount"].sum()) if not inc_audit_df.empty else 0.0
+                        tot_expense = float(exp_audit_df["amount"].sum()) if not exp_audit_df.empty else 0.0
+                        tot_loan = float(loan_audit_df["amount"].sum()) if not loan_audit_df.empty else 0.0
 
                         # Staff Advances & Spends
                         adv_all = tables.get("advances", pd.DataFrame())
@@ -2035,15 +2057,15 @@ elif menu == "🏢 Execution(Accounts)":
                                 comp_html_rows = "<tr><td colspan='7' style='text-align:center; color:#64748b;'>No components logged.</td></tr>"
 
                             inc_html_rows = ""
-                            if not inc_data.empty:
-                                for idx_i, (_, i_r) in enumerate(inc_data.iterrows(), start=1):
+                            if not inc_audit_df.empty:
+                                for idx_i, (_, i_r) in enumerate(inc_audit_df.iterrows(), start=1):
                                     inc_html_rows += f"<tr><td>{idx_i}</td><td>{i_r['title']}</td><td>PKR {_safe_float(i_r['amount']):,.0f}</td><td>{i_r.get('cheque_number') or '—'}</td></tr>"
                             else:
                                 inc_html_rows = "<tr><td colspan='4' style='text-align:center; color:#64748b;'>No income receipts logged.</td></tr>"
 
                             exp_html_rows = ""
-                            if not exp_data.empty:
-                                for idx_e, (_, e_r) in enumerate(exp_data.iterrows(), start=1):
+                            if not exp_audit_df.empty:
+                                for idx_e, (_, e_r) in enumerate(exp_audit_df.iterrows(), start=1):
                                     exp_html_rows += f"<tr><td>{idx_e}</td><td>{e_r['title']}</td><td>PKR {_safe_float(e_r['amount']):,.0f}</td></tr>"
                             else:
                                 exp_html_rows = "<tr><td colspan='3' style='text-align:center; color:#64748b;'>No direct expenses.</td></tr>"
