@@ -1551,37 +1551,17 @@ def render_monthly_report_view():
 
     # Render data grouped by Company and Project
     for c_name, projects_dict in sorted(grouped_data.items()):
-        # Calculate Company-wide Subtotals
         c_income = 0.0
         c_expense = 0.0
         c_loans = 0.0
-        for p_name, tx_list in projects_dict.items():
-            for tx in tx_list:
-                amt = tx["amount"]
-                txtype = tx["type"]
-                if txtype == "INCOME":
-                    c_income += amt
-                elif txtype in ("EXPENSE", "SPEND"):
-                    c_expense += amt
-                elif txtype == "LOAN":
-                    c_loans += amt
-
-        # Company Header Box
-        st.markdown(f"<div class='company-print-block'>", unsafe_allow_html=True)
-        st.markdown(f"#### 🏢 Company: **{c_name}**")
-        st.markdown(
-            f"**Company Subtotals** | "
-            f"Income: <span style='color:#10B981;'>PKR {c_income:,.0f}</span> | "
-            f"Expense/Spends: <span style='color:#EF4444;'>PKR {c_expense:,.0f}</span> | "
-            f"Loans: <span style='color:#3B82F6;'>PKR {c_loans:,.0f}</span>",
-            unsafe_allow_html=True
-        )
+        
+        projects_summary = []
         
         for p_name, tx_list in sorted(projects_dict.items()):
-            # Calculate Project Subtotals
             p_income = 0.0
             p_expense = 0.0
             p_loans = 0.0
+            
             for tx in tx_list:
                 amt = tx["amount"]
                 txtype = tx["type"]
@@ -1591,38 +1571,39 @@ def render_monthly_report_view():
                     p_expense += amt
                 elif txtype == "LOAN":
                     p_loans += amt
+                    
+            p_net_flow = p_income + p_loans - p_expense
+            
+            projects_summary.append({
+                "Project Name": p_name,
+                "Income (Inflow)": f"PKR {p_income:,.0f}",
+                "Outcome (Outflow)": f"PKR {p_expense:,.0f}",
+                "Loans": f"PKR {p_loans:,.0f}",
+                "Net Flow": f"PKR {p_net_flow:,.0f}"
+            })
+            
+            c_income += p_income
+            c_expense += p_expense
+            c_loans += p_loans
 
-            # Project Subheader Box
-            st.markdown(f"<div class='project-print-block' style='margin-left: 20px; margin-top: 15px;'>", unsafe_allow_html=True)
-            st.markdown(f"##### 📁 Project: **{p_name}**")
-            
-            # Sort transaction entries by date
-            tx_list_sorted = sorted(tx_list, key=lambda x: x["date"])
-            
-            # Build DataFrame for display
-            df_rows = []
-            for idx, tx in enumerate(tx_list_sorted, 1):
-                df_rows.append({
-                    "Date": tx["date"],
-                    "Type": tx["type"],
-                    "Description": tx["title"],
-                    "Cheque / Reference": tx["cheque"],
-                    "Amount (PKR)": f"PKR {tx['amount']:,.0f}"
-                })
-            
-            p_df = pd.DataFrame(df_rows)
-            st.table(p_df)
-            
-            st.markdown(
-                f"<p style='font-size:0.9rem; font-weight:600; text-align:right; margin-top:-10px; margin-bottom:15px;'>"
-                f"Project Subtotals &rarr; Inflow: <span style='color:#10B981;'>PKR {p_income:,.0f}</span> | "
-                f"Outflow: <span style='color:#EF4444;'>PKR {p_expense:,.0f}</span> | "
-                f"Loan: <span style='color:#3B82F6;'>PKR {p_loans:,.0f}</span>"
-                f"</p>",
-                unsafe_allow_html=True
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-            
+        # Company Header Box
+        st.markdown(f"<div class='company-print-block'>", unsafe_allow_html=True)
+        st.markdown(f"#### 🏢 Company: **{c_name}**")
+        
+        # Build DataFrame for projects summary list under this company
+        df_p_summary = pd.DataFrame(projects_summary)
+        df_p_summary.insert(0, "#", range(1, len(df_p_summary) + 1))
+        st.table(df_p_summary)
+        
+        st.markdown(
+            f"<p style='font-size:0.95rem; font-weight:600; text-align:right; margin-top:-10px; margin-bottom:20px;'>"
+            f"🏢 {c_name} Subtotals &rarr; "
+            f"Income: <span style='color:#10B981;'>PKR {c_income:,.0f}</span> | "
+            f"Outcome/Spends: <span style='color:#EF4444;'>PKR {c_expense:,.0f}</span> | "
+            f"Loans: <span style='color:#3B82F6;'>PKR {c_loans:,.0f}</span>"
+            f"</p>",
+            unsafe_allow_html=True
+        )
         st.markdown("</div>", unsafe_allow_html=True)
         st.write("---")
 
