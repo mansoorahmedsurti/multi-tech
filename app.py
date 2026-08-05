@@ -152,6 +152,21 @@ def _safe_float(value):
         return 0.0
     return float(value)
 
+def _safe_date(value, default=None):
+    if default is None:
+        default = datetime.date.today()
+    if value is None or pd.isna(value):
+        return default
+    try:
+        if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+            return value
+        dt = pd.to_datetime(value)
+        if pd.isna(dt):
+            return default
+        return dt.date()
+    except Exception:
+        return default
+
 def _invalidate_data_cache():
     """Targeted cache invalidation — clears bulk data fetch and user summary cache."""
     fetch_all_table_data.clear()
@@ -2401,7 +2416,7 @@ elif menu == "🏢 Execution(Accounts)":
                                             fe1, fe2, fe3 = st.columns([2, 1.5, 1.5])
                                             edit_title = fe1.text_input(f"{label_name} Description", value=row["title"])
                                             edit_amount = fe2.number_input("Amount (PKR)", min_value=0.0, step=500.0, value=float(row["amount"]))
-                                            row_dt_val = pd.to_datetime(row["created_at"]).date() if "created_at" in row and not pd.isna(row["created_at"]) else datetime.date.today()
+                                            row_dt_val = _safe_date(row.get("created_at"))
                                             edit_date = fe3.date_input("Record Date", value=row_dt_val)
                                             
                                             nature_opts = ["Cash", "Cheque", "Online Transfer", "Pay Order", "Direct Deposit"]
@@ -2902,7 +2917,7 @@ elif menu == "🎫 Voucher":
                         ve1, ve2, ve3 = st.columns([2, 1.5, 1.5])
                         ve_title = ve1.text_input("Voucher Title*", value=r["title"])
                         ve_amount = ve2.number_input("Requested Payout Amount (PKR)*", min_value=0.0, step=10.0, value=float(r["amount"]))
-                        v_dt_val = pd.to_datetime(r["created_at"]).date() if "created_at" in r and not pd.isna(r["created_at"]) else datetime.date.today()
+                        v_dt_val = _safe_date(r.get("created_at"))
                         ve_date = ve3.date_input("Voucher Date", value=v_dt_val)
                         ve_remarks = st.text_area("Remarks", value=r["remarks"] if not pd.isna(r["remarks"]) else "", height=45)
                         vs1, vs2 = st.columns(2)
@@ -3354,7 +3369,7 @@ elif menu == "📋 Quotation & Planning":
                                             edit_lg_val = edit_lg_opt
                                             
                                     edit_st = st.selectbox("Status", ["Sent", "Successful", "Declined"], index=["Sent", "Successful", "Declined"].index(status_curr) if status_curr in ["Sent", "Successful", "Declined"] else 0)
-                                    q_dt_val = pd.to_datetime(q_row["created_at"]).date() if q_row.get("created_at") and not pd.isna(q_row["created_at"]) else datetime.date.today()
+                                    q_dt_val = _safe_date(q_row.get("created_at"))
                                     edit_q_date = st.date_input("Date Sent", value=q_dt_val, key=f"edit_q_date_{q_id}")
                                     edit_notes = st.text_area("Notes", value=str(q_row["notes"] or ""))
 
