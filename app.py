@@ -2519,167 +2519,267 @@ elif menu == "🏢 Execution(Accounts)":
                                                 st.rerun()
 
                                     with st.expander(f"📋 Spending Logs & Actions ({len(spends_df)} entries logged)", expanded=is_owner):
-                                        chosen_sp_cat = None
-                                        
-                                        def _parse_sp_heading(item_val):
+                                        # --- Parse items into standalone vs categorized ---
+                                        def _parse_sp_item(item_val):
                                             t_str = str(item_val).strip()
                                             if t_str.startswith("[") and "]" in t_str:
-                                                hdr_part = t_str[1:t_str.index("]")]
-                                                item_part = t_str[t_str.index("]") + 1:].strip()
-                                                if " > " in hdr_part:
-                                                    h, s = hdr_part.split(" > ", 1)
-                                                    return h.strip(), s.strip(), item_part
-                                                return hdr_part.strip(), "General", item_part
-                                            return "General Spends", "General", t_str
+                                                cat_part = t_str[1:t_str.index("]")].strip()
+                                                desc_part = t_str[t_str.index("]") + 1:].strip()
+                                                return cat_part, desc_part
+                                            return None, t_str
 
-                                        sp_parsed = []
-                                        sp_all_headings = []
+                                        standalone_items = []
+                                        cat_groups = {}  # {category_name: [list of spend dicts]}
+                                        all_category_names = []
+
                                         if not spends_df.empty:
                                             for _, sp in spends_df.iterrows():
-                                                h, s, clean_i = _parse_sp_heading(sp["item_name"])
+                                                cat, desc = _parse_sp_item(sp["item_name"])
                                                 sp_dict = sp.to_dict()
-                                                sp_dict["heading"] = h
-                                                sp_dict["subcat"] = s
-                                                sp_dict["clean_title"] = clean_i
-                                                sp_parsed.append(sp_dict)
-                                                if h and h not in sp_all_headings:
-                                                    sp_all_headings.append(h)
+                                                sp_dict["_category"] = cat
+                                                sp_dict["_description"] = desc
+                                                if cat:
+                                                    if cat not in cat_groups:
+                                                        cat_groups[cat] = []
+                                                        all_category_names.append(cat)
+                                                    cat_groups[cat].append(sp_dict)
+                                                else:
+                                                    standalone_items.append(sp_dict)
 
-                                        sp_parsed_df = pd.DataFrame(sp_parsed)
+                                        can_act = is_owner or role in ("CEO", "Accountant")
 
-                                        # Category Dropdown with Inline Add Category Option
-                                        sp_cat_opts = ["📊 All Categories (Combined)"] + [f"📂 {h}" for h in sp_all_headings] + ["➕ Add New Category Heading..."]
-                                        sp_c1, sp_c2 = st.columns([3.5, 6.5], vertical_alignment="center")
-                                        sp_c1.markdown("##### 📁 Select Category Heading")
-                                        sel_sp_opt = sp_c2.selectbox(
-                                            "Select Category Heading",
-                                            sp_cat_opts,
-                                            key=f"sp_cat_sel_{adv_id}",
-                                            label_visibility="collapsed"
-                                        )
+                                        # --- Helper: render a single component row with edit/delete ---
+                                        def _render_component_row(sp_dict, category_context=None):
+                                            sp_id = int(sp_dict["id"])
+                                            sp_edit_key = f"edit_sp_{sp_id}"
+                                            is_editing_sp = st.session_state.get(sp_edit_key, False)
 
-                                        if sel_sp_opt == "➕ Add New Category Heading...":
-                                            new_cat_in = st.text_input("New Category Heading Name*", placeholder="e.g. Accessories, Site Equipment, Safety Gear", key=f"new_cat_input_{adv_id}")
-                                            chosen_sp_cat = new_cat_in.strip() if new_cat_in.strip() else None
-                                        elif sel_sp_opt != "📊 All Categories (Combined)":
-                                            chosen_sp_cat = sel_sp_opt.replace("📂 ", "").strip()
-                                        else:
-                                            chosen_sp_cat = None
+                                            with st.container(border=True):
+                                                rc1, rc2, rc3 = st.columns([4.5, 2.5, 1.5])
+                                                rc1.markdown(f"🧾 {sp_dict['_description']}")
+                                                rc2.markdown(f"**PKR {_safe_float(sp_dict['amount_spent']):,.0f}**")
 
-                                        if chosen_sp_cat and not sp_parsed_df.empty:
-                                            sp_parsed_df = sp_parsed_df[sp_parsed_df["heading"] == chosen_sp_cat]
+                                                if can_act:
+                                                    bc1, bc2 = rc3.columns(2)
+                                                    if bc1.button("✏️", key=f"btn_edit_sp_{sp_id}", use_container_width=True, help="Edit"):
+                                                        next_val = not is_editing_sp
+                                                        close_all_open_forms(except_key=sp_edit_key)
+                                                        st.session_state[sp_edit_key] = next_val
+                                                        st.rerun()
+                                                    if bc2.button("🗑️", key=f"btn_del_sp_{sp_id}", use_container_width=True, help="Delete"):
+                                                        try:
+                                                            sb.table("advance_spends").delete().eq("id", sp_id).execute()
+                                                            confirm_warn_and_rerun("Deleted spend entry.", icon="🗑️")
+                                                        except Exception as e:
+                                                            st.error(f"Cannot delete: {e}")
 
-                                        if spends_df.empty:
-                                            st.caption("No spend items logged yet.")
-                                        elif sp_parsed_df.empty:
-                                            st.caption(f"No spend items logged under '{chosen_sp_cat}'.")
-                                        else:
-                                            sp_grouped = sp_parsed_df.groupby("heading")
-
-                                            for sp_heading_name, sp_heading_group in sp_grouped:
-                                                h_tot = sp_heading_group["amount_spent"].apply(_safe_float).sum()
-                                                st.markdown(f"📂 **{sp_heading_name}** *(Subtotal: PKR {h_tot:,.0f})*")
-                                                sp_sub_grouped = sp_heading_group.groupby("subcat")
-                                                for sp_subcat_name, sp_sub_group in sp_sub_grouped:
-                                                    if sp_subcat_name != "General":
-                                                        sub_tot = sp_sub_group["amount_spent"].apply(_safe_float).sum()
-                                                        st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;🏷️ **Sub-Category: {sp_subcat_name}** *(PKR {sub_tot:,.0f})*")
-                                                    
-                                                    for _, sp in sp_sub_group.iterrows():
-                                                        sp_id = int(sp["id"])
-                                                        sp_edit_key = f"edit_sp_{sp_id}"
-                                                        is_editing_sp = st.session_state.get(sp_edit_key, False)
-                                                        
-                                                        with st.container(border=True):
-                                                            sp_c1, sp_c2, sp_c3 = st.columns([4, 2.5, 1.8])
-                                                            sp_c1.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;🧾 {sp['clean_title']}")
-                                                            sp_c2.markdown(f"PKR {_safe_float(sp['amount_spent']):,.0f}")
-                                                            
-                                                            if is_owner or can_manage:
-                                                                sp_btn_col1, sp_btn_col2 = sp_c3.columns(2)
-                                                                if sp_btn_col1.button("✏️", key=f"btn_edit_sp_{sp_id}", use_container_width=True, help="Edit Spend"):
-                                                                    next_sp_edit = not is_editing_sp
-                                                                    close_all_open_forms(except_key=sp_edit_key)
-                                                                    st.session_state[sp_edit_key] = next_sp_edit
-                                                                    st.rerun()
-                                                                if sp_btn_col2.button("🗑️", key=f"btn_del_sp_{sp_id}", use_container_width=True, help="Delete Spend"):
-                                                                    try:
-                                                                        sb.table("advance_spends").delete().eq("id", sp_id).execute()
-                                                                        confirm_warn_and_rerun("Deleted spend entry.", icon="🗑️")
-                                                                    except Exception as e:
-                                                                        st.error(f"Cannot delete spend: {e}")
-                                                                        
-                                                            if is_editing_sp and (is_owner or can_manage):
-                                                                with st.form(f"form_edit_sp_{sp_id}"):
-                                                                    esp_h, esp_s = st.columns(2)
-                                                                    edit_sp_h = esp_h.text_input("Heading / Main Category", value=sp["heading"])
-                                                                    edit_sp_s = esp_s.text_input("Sub-Category", value=sp["subcat"] if sp["subcat"] != "General" else "")
-
-                                                                    edit_sp_concept = st.text_input("Concept Description", value=sp["clean_title"])
-                                                                    edit_sp_amt = st.number_input("Amount Spent (PKR)", min_value=0.0, step=100.0, value=float(sp["amount_spent"]))
-                                                                    es_c1, es_c2 = st.columns(2)
-                                                                    save_sp = es_c1.form_submit_button("💾 Save", type="primary", use_container_width=True)
-                                                                    cancel_sp = es_c2.form_submit_button("✖️ Cancel", use_container_width=True)
-                                                                    if save_sp:
-                                                                        if edit_sp_concept.strip() and edit_sp_amt > 0:
-                                                                            new_remaining = remaining + float(sp["amount_spent"]) - edit_sp_amt
-                                                                            if new_remaining < 0:
-                                                                                st.error(f"Cannot update: exceeds remaining advance limit.")
-                                                                            else:
-                                                                                try:
-                                                                                    full_sp_hdr = edit_sp_h.strip() if edit_sp_h.strip() else ""
-                                                                                    if edit_sp_s.strip():
-                                                                                        full_sp_hdr = f"{full_sp_hdr} > {edit_sp_s.strip()}" if full_sp_hdr else edit_sp_s.strip()
-                                                                                    item_fmt = f"[{full_sp_hdr}] {edit_sp_concept.strip()}" if full_sp_hdr else edit_sp_concept.strip()
-
-                                                                                    sb.table("advance_spends").update({
-                                                                                        "item_name": item_fmt,
-                                                                                        "amount_spent": float(edit_sp_amt)
-                                                                                    }).eq("id", sp_id).execute()
-                                                                                    st.session_state[sp_edit_key] = False
-                                                                                    confirm_and_rerun("Updated spend entry.", icon="💾")
-                                                                                except Exception as e:
-                                                                                    st.error(f"Cannot save: {e}")
-                                                                        else:
-                                                                            st.error("Please enter a valid description and non-zero amount.")
-                                                                    if cancel_sp:
-                                                                        st.session_state[sp_edit_key] = False
-                                                                        st.rerun()
-
-                                        if is_owner or role in ("CEO", "Accountant"):
-                                            st.write("---")
-                                            with st.form(f"form_add_spend_{adv_id}", clear_on_submit=True):
-                                                st.markdown("➕ **Log New Component to Dropdown Category**")
-                                                sf_h, sf_s = st.columns(2)
-                                                default_sp_h = chosen_sp_cat if chosen_sp_cat else ""
-                                                sp_heading = sf_h.text_input("General Category Heading*", value=default_sp_h, placeholder="e.g. Accessories, Field Equipment", key=f"sp_h_{adv_id}")
-                                                sp_subcat = sf_s.text_input("Sub-Category (Optional)", placeholder="e.g. Tools, Transport", key=f"sp_sub_{adv_id}")
-
-                                                sf1, sf2 = st.columns(2)
-                                                new_item = sf1.text_input("Component Description*", key=f"item_{adv_id}")
-                                                new_spend_amt = sf2.number_input("Amount Spent (PKR)*", value=None, min_value=0.0, step=100.0, placeholder="Amount Spent (PKR)", key=f"spend_amt_{adv_id}")
-                                                if st.form_submit_button("➕ Add Component to Dropdown Category", type="primary", use_container_width=True):
-                                                    if new_item.strip() and new_spend_amt is not None and new_spend_amt > 0:
-                                                        if new_spend_amt > remaining + 0.001:
-                                                            st.error(f"Action Blocked: This entry exceeds remaining balance of PKR {remaining:,.0f}.")
-                                                        else:
-                                                            try:
-                                                                full_sp_hdr = sp_heading.strip() if sp_heading.strip() else ""
-                                                                if sp_subcat.strip():
-                                                                    full_sp_hdr = f"{full_sp_hdr} > {sp_subcat.strip()}" if full_sp_hdr else sp_subcat.strip()
-                                                                
-                                                                item_formatted = f"[{full_sp_hdr}] {new_item.strip()}" if full_sp_hdr else new_item.strip()
-
-                                                                sb.table("advance_spends").insert({
-                                                                    "advance_id": adv_id, 
-                                                                    "item_name": item_formatted, 
-                                                                    "amount_spent": float(new_spend_amt)
-                                                                }).execute()
-                                                                confirm_and_rerun(f"💵 Logged spend '{new_item.strip()}' (PKR {new_spend_amt:,.0f}).", icon="🧾")
-                                                            except Exception as e:
-                                                                st.error(f"Database insertion failed: {e}")
+                                            if is_editing_sp and can_act:
+                                                with st.form(f"form_edit_sp_{sp_id}"):
+                                                    # Category reassignment dropdown
+                                                    move_opts = ["(No Category — Standalone)"] + [f"📂 {c}" for c in all_category_names]
+                                                    current_cat = sp_dict["_category"]
+                                                    if current_cat and f"📂 {current_cat}" in move_opts:
+                                                        default_idx = move_opts.index(f"📂 {current_cat}")
                                                     else:
-                                                        st.error("Please enter a valid item description and non-zero amount.")
+                                                        default_idx = 0
+                                                    move_to = st.selectbox("Move to Category", move_opts, index=default_idx, key=f"move_cat_{sp_id}")
+
+                                                    edit_desc = st.text_input("Description", value=sp_dict["_description"], key=f"ed_desc_{sp_id}")
+                                                    edit_amt = st.number_input("Amount (PKR)", min_value=0.0, step=100.0, value=float(sp_dict["amount_spent"]), key=f"ed_amt_{sp_id}")
+                                                    sc1, sc2 = st.columns(2)
+                                                    save_btn = sc1.form_submit_button("💾 Save", type="primary", use_container_width=True)
+                                                    cancel_btn = sc2.form_submit_button("✖️ Cancel", use_container_width=True)
+                                                    if save_btn:
+                                                        if edit_desc.strip() and edit_amt > 0:
+                                                            new_remaining = remaining + float(sp_dict["amount_spent"]) - edit_amt
+                                                            if new_remaining < 0:
+                                                                st.error("Cannot update: exceeds remaining advance limit.")
+                                                            else:
+                                                                try:
+                                                                    if move_to == "(No Category — Standalone)":
+                                                                        item_fmt = edit_desc.strip()
+                                                                    else:
+                                                                        chosen_cat = move_to.replace("📂 ", "").strip()
+                                                                        item_fmt = f"[{chosen_cat}] {edit_desc.strip()}"
+                                                                    sb.table("advance_spends").update({
+                                                                        "item_name": item_fmt,
+                                                                        "amount_spent": float(edit_amt)
+                                                                    }).eq("id", sp_id).execute()
+                                                                    st.session_state[sp_edit_key] = False
+                                                                    confirm_and_rerun("Updated spend entry.", icon="💾")
+                                                                except Exception as e:
+                                                                    st.error(f"Cannot save: {e}")
+                                                        else:
+                                                            st.error("Please enter a valid description and non-zero amount.")
+                                                    if cancel_btn:
+                                                        st.session_state[sp_edit_key] = False
+                                                        st.rerun()
+
+                                        # --- Render standalone components first ---
+                                        if standalone_items:
+                                            for sp_dict in standalone_items:
+                                                _render_component_row(sp_dict)
+
+                                        if not standalone_items and not cat_groups:
+                                            st.caption("No spend items logged yet.")
+
+                                        # --- Render category groups as nested expanders ---
+                                        for cat_name in all_category_names:
+                                            cat_items = cat_groups[cat_name]
+                                            cat_total = sum(_safe_float(x["amount_spent"]) for x in cat_items)
+                                            cat_rename_key = f"rename_cat_{adv_id}_{cat_name}"
+                                            is_renaming = st.session_state.get(cat_rename_key, False)
+
+                                            with st.expander(f"📂 {cat_name}  ·  {len(cat_items)} item{'s' if len(cat_items) != 1 else ''}  ·  PKR {cat_total:,.0f}"):
+                                                # Category management buttons (rename / delete)
+                                                if can_act:
+                                                    mgmt_c1, mgmt_c2, mgmt_c3 = st.columns([5, 2, 2])
+                                                    mgmt_c1.markdown(f"**📂 {cat_name}**")
+                                                    if mgmt_c2.button("✏️ Rename", key=f"btn_rename_cat_{adv_id}_{cat_name}", use_container_width=True):
+                                                        st.session_state[cat_rename_key] = not is_renaming
+                                                        st.rerun()
+                                                    if mgmt_c3.button("🗑️ Remove", key=f"btn_del_cat_{adv_id}_{cat_name}", use_container_width=True, help="Remove category — components become standalone"):
+                                                        try:
+                                                            for ci in cat_items:
+                                                                sb.table("advance_spends").update({
+                                                                    "item_name": ci["_description"]
+                                                                }).eq("id", int(ci["id"])).execute()
+                                                            confirm_warn_and_rerun(f"Category '{cat_name}' removed. {len(cat_items)} component(s) moved to standalone.", icon="📦")
+                                                        except Exception as e:
+                                                            st.error(f"Cannot remove category: {e}")
+
+                                                    if is_renaming:
+                                                        with st.form(f"form_rename_cat_{adv_id}_{cat_name}"):
+                                                            new_cat_name = st.text_input("New Category Name", value=cat_name, key=f"inp_rename_{adv_id}_{cat_name}")
+                                                            rc1, rc2 = st.columns(2)
+                                                            if rc1.form_submit_button("💾 Rename", type="primary", use_container_width=True):
+                                                                if new_cat_name.strip() and new_cat_name.strip() != cat_name:
+                                                                    try:
+                                                                        for ci in cat_items:
+                                                                            sb.table("advance_spends").update({
+                                                                                "item_name": f"[{new_cat_name.strip()}] {ci['_description']}"
+                                                                            }).eq("id", int(ci["id"])).execute()
+                                                                        st.session_state[cat_rename_key] = False
+                                                                        confirm_and_rerun(f"Category renamed to '{new_cat_name.strip()}'.", icon="✏️")
+                                                                    except Exception as e:
+                                                                        st.error(f"Rename failed: {e}")
+                                                                else:
+                                                                    st.error("Please enter a different name.")
+                                                            if rc2.form_submit_button("✖️ Cancel", use_container_width=True):
+                                                                st.session_state[cat_rename_key] = False
+                                                                st.rerun()
+
+                                                st.write("---")
+
+                                                # Render components inside this category
+                                                for sp_dict in cat_items:
+                                                    _render_component_row(sp_dict, category_context=cat_name)
+
+                                                # Add component form inside this category
+                                                if can_act:
+                                                    with st.form(f"form_add_in_cat_{adv_id}_{cat_name}", clear_on_submit=True):
+                                                        st.markdown(f"➕ **Add Component to {cat_name}**")
+                                                        ic1, ic2 = st.columns(2)
+                                                        cat_new_desc = ic1.text_input("Description*", placeholder="e.g. USB Cable, Fuel", key=f"cat_desc_{adv_id}_{cat_name}")
+                                                        cat_new_amt = ic2.number_input("Amount (PKR)*", value=None, min_value=0.0, step=100.0, key=f"cat_amt_{adv_id}_{cat_name}")
+                                                        if st.form_submit_button("➕ Add", type="primary", use_container_width=True):
+                                                            if cat_new_desc.strip() and cat_new_amt is not None and cat_new_amt > 0:
+                                                                if cat_new_amt > remaining + 0.001:
+                                                                    st.error(f"Exceeds remaining balance of PKR {remaining:,.0f}.")
+                                                                else:
+                                                                    try:
+                                                                        sb.table("advance_spends").insert({
+                                                                            "advance_id": adv_id,
+                                                                            "item_name": f"[{cat_name}] {cat_new_desc.strip()}",
+                                                                            "amount_spent": float(cat_new_amt)
+                                                                        }).execute()
+                                                                        confirm_and_rerun(f"Added '{cat_new_desc.strip()}' to {cat_name}.", icon="🧾")
+                                                                    except Exception as e:
+                                                                        st.error(f"Insert failed: {e}")
+                                                            else:
+                                                                st.error("Enter a valid description and non-zero amount.")
+
+                                        # --- Bottom action buttons: Add Category + Add Component ---
+                                        if can_act:
+                                            st.write("---")
+                                            btn_c1, btn_c2 = st.columns(2)
+                                            add_cat_key = f"show_add_cat_{adv_id}"
+                                            add_comp_key = f"show_add_comp_{adv_id}"
+
+                                            if btn_c1.button("📂 Add Category", key=f"btn_add_cat_{adv_id}", use_container_width=True):
+                                                st.session_state[add_cat_key] = not st.session_state.get(add_cat_key, False)
+                                                st.session_state[add_comp_key] = False
+                                                st.rerun()
+                                            if btn_c2.button("🧾 Add Component", key=f"btn_add_comp_{adv_id}", use_container_width=True):
+                                                st.session_state[add_comp_key] = not st.session_state.get(add_comp_key, False)
+                                                st.session_state[add_cat_key] = False
+                                                st.rerun()
+
+                                            # --- Add Category form ---
+                                            if st.session_state.get(add_cat_key, False):
+                                                with st.form(f"form_new_cat_{adv_id}", clear_on_submit=True):
+                                                    st.markdown("📂 **Create New Category**")
+                                                    new_cat_name = st.text_input("Category Name*", placeholder="e.g. Accessories, Transport, Safety Gear", key=f"new_cat_{adv_id}")
+                                                    nc1, nc2 = st.columns(2)
+                                                    first_desc = nc1.text_input("First Component (Optional)", placeholder="e.g. USB Cable", key=f"first_desc_{adv_id}")
+                                                    first_amt = nc2.number_input("Amount (PKR)", value=None, min_value=0.0, step=100.0, key=f"first_amt_{adv_id}")
+                                                    if st.form_submit_button("📂 Create Category", type="primary", use_container_width=True):
+                                                        if new_cat_name.strip():
+                                                            if new_cat_name.strip() in all_category_names:
+                                                                st.error(f"Category '{new_cat_name.strip()}' already exists.")
+                                                            elif first_desc.strip() and first_amt is not None and first_amt > 0:
+                                                                if first_amt > remaining + 0.001:
+                                                                    st.error(f"Exceeds remaining balance of PKR {remaining:,.0f}.")
+                                                                else:
+                                                                    try:
+                                                                        sb.table("advance_spends").insert({
+                                                                            "advance_id": adv_id,
+                                                                            "item_name": f"[{new_cat_name.strip()}] {first_desc.strip()}",
+                                                                            "amount_spent": float(first_amt)
+                                                                        }).execute()
+                                                                        st.session_state[add_cat_key] = False
+                                                                        confirm_and_rerun(f"Category '{new_cat_name.strip()}' created with first component.", icon="📂")
+                                                                    except Exception as e:
+                                                                        st.error(f"Insert failed: {e}")
+                                                            else:
+                                                                # Create an empty category marker (zero-amount placeholder)
+                                                                try:
+                                                                    sb.table("advance_spends").insert({
+                                                                        "advance_id": adv_id,
+                                                                        "item_name": f"[{new_cat_name.strip()}] (Category created)",
+                                                                        "amount_spent": 0.0
+                                                                    }).execute()
+                                                                    st.session_state[add_cat_key] = False
+                                                                    confirm_and_rerun(f"Category '{new_cat_name.strip()}' created. Add components inside it.", icon="📂")
+                                                                except Exception as e:
+                                                                    st.error(f"Insert failed: {e}")
+                                                        else:
+                                                            st.error("Please enter a category name.")
+
+                                            # --- Add standalone Component form ---
+                                            if st.session_state.get(add_comp_key, False):
+                                                with st.form(f"form_new_comp_{adv_id}", clear_on_submit=True):
+                                                    st.markdown("🧾 **Add Standalone Component** *(no category)*")
+                                                    sc1, sc2 = st.columns(2)
+                                                    comp_desc = sc1.text_input("Description*", placeholder="e.g. Miscellaneous, Parking", key=f"comp_desc_{adv_id}")
+                                                    comp_amt = sc2.number_input("Amount (PKR)*", value=None, min_value=0.0, step=100.0, key=f"comp_amt_{adv_id}")
+                                                    if st.form_submit_button("➕ Add Component", type="primary", use_container_width=True):
+                                                        if comp_desc.strip() and comp_amt is not None and comp_amt > 0:
+                                                            if comp_amt > remaining + 0.001:
+                                                                st.error(f"Exceeds remaining balance of PKR {remaining:,.0f}.")
+                                                            else:
+                                                                try:
+                                                                    sb.table("advance_spends").insert({
+                                                                        "advance_id": adv_id,
+                                                                        "item_name": comp_desc.strip(),
+                                                                        "amount_spent": float(comp_amt)
+                                                                    }).execute()
+                                                                    st.session_state[add_comp_key] = False
+                                                                    confirm_and_rerun(f"Logged standalone spend '{comp_desc.strip()}'.", icon="🧾")
+                                                                except Exception as e:
+                                                                    st.error(f"Insert failed: {e}")
+                                                        else:
+                                                            st.error("Enter a valid description and non-zero amount.")
 
                     with t1: render_simple_form_tab(inc_data, "income", "Income", has_nature=True)
                     with t2: render_simple_form_tab(loan_data, "loan", "Loan", has_nature=False)
