@@ -2235,7 +2235,7 @@ elif menu == "🏢 Execution(Accounts)":
                             else:
                                 st.caption("No staff field advances provisioned for this project.")
 
-                    t1, t2, t3, t4 = st.tabs(["🔴 Expenses", "🟢 Income", "🔵 Loans", "💳 Staff Advances"])
+                    t1, t2, t3 = st.tabs(["🟢 Income", "🔵 Loans", "💳 Staff Advances"])
 
                     def render_simple_form_tab(data_df, ledger_type, label_name):
                         has_cheque = (ledger_type == "income")
@@ -2338,7 +2338,10 @@ elif menu == "🏢 Execution(Accounts)":
 
                     def render_advances_tab(pid):
                         # 1. Fetch available advance personas for the selection dropdown
-                        advance_usernames = get_users_by_role("Advance")
+                        advance_usernames = get_users_by_role("Quotation Sender") or get_users_by_role("Advance") or get_users_by_role("Accountant")
+                        if not advance_usernames:
+                            all_u = get_all_users_summary()
+                            advance_usernames = all_u["username"].tolist() if not all_u.empty else []
 
                         # 2. Extract current active allocations in-memory
                         a_all = tables["advances"]
@@ -2461,9 +2464,9 @@ elif menu == "🏢 Execution(Accounts)":
                                                                 st.session_state[sp_edit_key] = False
                                                                 st.rerun()
 
-                                        if is_owner:
+                                        if is_owner or role in ("CEO", "Accountant"):
                                             st.write("---")
-                                            st.markdown("➕ **Log New Project Expense**")
+                                            st.markdown("➕ **Log New Project Expense / Spend Item**")
                                             with st.form(f"add_spend_{adv_id}", clear_on_submit=True):
                                                 sf1, sf2 = st.columns(2)
                                                 new_item = sf1.text_input("Expense Description / Concept", key=f"item_{adv_id}")
@@ -2471,7 +2474,7 @@ elif menu == "🏢 Execution(Accounts)":
                                                 if st.form_submit_button("➕ Submit Expense Record", use_container_width=True):
                                                     if new_item.strip() and new_spend_amt is not None and new_spend_amt > 0:
                                                         if new_spend_amt > remaining + 0.001:
-                                                            st.error(f"Action Blocked: This entry exceeds your remaining balance of PKR {remaining:,.0f}.")
+                                                            st.error(f"Action Blocked: This entry exceeds remaining balance of PKR {remaining:,.0f}.")
                                                         else:
                                                             try:
                                                                 sb.table("advance_spends").insert({
@@ -2485,15 +2488,17 @@ elif menu == "🏢 Execution(Accounts)":
                                                     else:
                                                         st.error("Please enter a valid item concept description and non-zero amount.")
 
-                    with t1: render_simple_form_tab(exp_data, "expense", "Expense")
-                    with t2: render_simple_form_tab(inc_data, "income", "Income")
-                    with t3: render_simple_form_tab(loan_data, "loan", "Loan")
-                    with t4:
+                    with t1: render_simple_form_tab(inc_data, "income", "Income")
+                    with t2: render_simple_form_tab(loan_data, "loan", "Loan")
+                    with t3:
                         render_advances_tab(pid)
 
                         a_all_adv = tables["advances"]
                         adv_rows = a_all_adv[a_all_adv["project_id"] == pid].sort_values("person_name") if not a_all_adv.empty else pd.DataFrame()
-                        advance_usernames = get_users_by_role("Advance")
+                        advance_usernames = get_users_by_role("Quotation Sender") or get_users_by_role("Advance") or get_users_by_role("Accountant")
+                        if not advance_usernames:
+                            all_u = get_all_users_summary()
+                            advance_usernames = all_u["username"].tolist() if not all_u.empty else []
 
                         if role in ("CEO", "Accountant"):
                             st.write("---")
