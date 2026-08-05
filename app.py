@@ -3062,8 +3062,7 @@ elif menu == "📋 Quotation & Planning":
                         q_amt_default = float(st.session_state.get("q_form_amount", 0.0))
                         q_amt_val = q_amt_default if q_amt_default > 0 else None
                         q_amount = st.number_input("Quotation Amount (PKR)", value=q_amt_val, min_value=0.0, step=5000.0, format="%.0f", placeholder="Enter Quotation Amount (PKR)")
-                        q_status = st.selectbox("Quotation Status", ["Sent", "Successful", "Declined"], index=0, help="'Sent' = Only Sent/Pending, 'Successful' = Approved/Won, 'Declined' = Rejected/Lost")
-                        
+                        q_status = "Sent"
                         qd_c1, qd_c2 = st.columns(2)
                         q_date = qd_c1.date_input("Date Sent", value=datetime.date.today())
                         q_validity_date = qd_c2.date_input("Validity / Expiry Date", value=datetime.date.today() + datetime.timedelta(days=30))
