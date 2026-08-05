@@ -158,14 +158,36 @@ def _invalidate_data_cache():
     get_all_users_summary.clear()
 
 def confirm_and_rerun(message, icon="✅"):
-    """Shows a toast confirmation, clears ONLY the data cache, then reruns."""
+    """Shows a toast confirmation, resets form state to automatically close active forms, clears data cache, then reruns."""
     st.toast(message, icon=icon)
+    for key in list(st.session_state.keys()):
+        if key.startswith("show_add_") or key.startswith("edit_") or key.startswith("btn_edit_"):
+            st.session_state[key] = False
+        if key in ("edit_co_id", "edit_proj_id"):
+            st.session_state[key] = None
+        if key == "q_form_has_error":
+            st.session_state[key] = False
+
+    st.session_state["q_form_company"] = ""
+    st.session_state["q_form_project"] = ""
+    st.session_state["q_form_num"] = ""
+    st.session_state["q_form_amount"] = 0.0
+    st.session_state["q_form_notes"] = ""
+
     _invalidate_data_cache()
     st.rerun()
 
 def confirm_warn_and_rerun(message, icon="⚠️"):
     """Same as confirm_and_rerun but for warnings/declines/removals."""
     st.toast(message, icon=icon)
+    for key in list(st.session_state.keys()):
+        if key.startswith("show_add_") or key.startswith("edit_") or key.startswith("btn_edit_"):
+            st.session_state[key] = False
+        if key in ("edit_co_id", "edit_proj_id"):
+            st.session_state[key] = None
+        if key == "q_form_has_error":
+            st.session_state[key] = False
+
     _invalidate_data_cache()
     st.rerun()
 
