@@ -7,7 +7,17 @@ import string
 import time
 import os
 import shutil
+import socket
+from concurrent.futures import ThreadPoolExecutor
 from supabase import create_client
+
+# Bypassing local DNS timeouts for Supabase domain resolution
+_orig_getaddrinfo = socket.getaddrinfo
+def _patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if host == "hcccwrjngbsbftapzums.supabase.co":
+        return _orig_getaddrinfo("172.64.149.246", port, family, type, proto, flags)
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+socket.getaddrinfo = _patched_getaddrinfo
 
 # Ensure logo.jpeg exists if logo.jpg is present
 if os.path.exists("logo.jpg") and not os.path.exists("logo.jpeg"):
@@ -30,14 +40,10 @@ st.set_page_config(
 class DBConnection:
     def __init__(self):
         self.client = None
-
         try:
             url = st.secrets["supabase"]["url"]
             key = st.secrets["supabase"]["key"]
             self.client = create_client(url, key)
-
-            # Test connection by hitting the users table
-            self.client.table("users").select("id").limit(1).execute()
         except Exception as e:
             st.error(
                 f"🚨 **Critical: Cannot connect to Supabase.**\n\n"
@@ -46,33 +52,15 @@ class DBConnection:
             )
             st.stop()
 
-        self._ensure_seed_users()
-
-    def _ensure_seed_users(self):
-        """Seed default users if the table is empty."""
-        try:
-            result = self.client.table("users").select("id", count="exact").limit(0).execute()
-            if result.count == 0:
-                self.client.table("users").insert([
-                    {"username": "ceo", "password": "ceo", "role": "CEO", "can_view_dashboard": True},
-                    {"username": "accountant", "password": "accountant", "role": "Accountant", "can_view_dashboard": True},
-                ]).execute()
-        except Exception:
-            pass
-
-        try:
-            master = self.client.table("users").select("id").eq("username", "asif.arain").execute()
-            if not master.data:
-                self.client.table("users").insert({
-                    "username": "asif.arain", "password": "admin123", "role": "CEO", "can_view_dashboard": True
-                }).execute()
-        except Exception:
-            pass
-
     def to_df(self, response, columns=None):
         """Convert a Supabase response to a pandas DataFrame."""
         if response and hasattr(response, 'data') and response.data:
-            return pd.DataFrame(response.data)
+            df = pd.DataFrame(response.data)
+            if columns:
+                for c in columns:
+                    if c not in df.columns:
+                        df[c] = None
+            return df
         return pd.DataFrame(columns=columns or [])
 
 
@@ -81,26 +69,78 @@ class DBConnection:
 def get_db():
     return DBConnection()
 
+@st.cache_resource
+def _seed_default_users(_db):
+    """One-time seed check — runs only once per server lifecycle."""
+    try:
+        result = _db.client.table("users").select("id", count="exact").limit(0).execute()
+        if result.count == 0:
+            _db.client.table("users").insert([
+                {"username": "ceo", "password": "ceo", "role": "CEO", "can_view_dashboard": True},
+                {"username": "accountant", "password": "accountant", "role": "Accountant", "can_view_dashboard": True},
+            ]).execute()
+    except Exception:
+        pass
+    try:
+        master = _db.client.table("users").select("id").eq("username", "asif.arain").execute()
+        if not master.data:
+            _db.client.table("users").insert({
+                "username": "asif.arain", "password": "admin123", "role": "CEO", "can_view_dashboard": True
+            }).execute()
+    except Exception:
+        pass
+
 db = get_db()
+_seed_default_users(db)
 sb = db.client  # shorthand for the supabase client
 
 # ==============================================================================
-# OPTIMIZED GLOBAL CACHED READS (IN-MEMORY BULK PROCESSING)
+# OPTIMIZED GLOBAL CACHED READS (PARALLEL MULTI-THREADED FETCHING)
 # ==============================================================================
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_all_table_data():
-    """Fetch core tables once to perform lightning-fast in-memory filtering."""
-    ledgers_res = sb.table("ledgers").select("*").execute()
-    vouchers_res = sb.table("vouchers").select("*").execute()
-    advances_res = sb.table("advances").select("*").execute()
-    spends_res = sb.table("advance_spends").select("*").execute()
+    """Fetch core tables concurrently in parallel threads for maximum speed."""
+    def _fetch_table(table_name, select_str="*", order_col=None, desc=False):
+        try:
+            q = sb.table(table_name).select(select_str)
+            if order_col:
+                q = q.order(order_col, desc=desc)
+            return q.execute()
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        f_ledgers = executor.submit(_fetch_table, "ledgers")
+        f_vouchers = executor.submit(_fetch_table, "vouchers", "*", "id", True)
+        f_advances = executor.submit(_fetch_table, "advances")
+        f_spends = executor.submit(_fetch_table, "advance_spends")
+        f_quotations = executor.submit(_fetch_table, "quotations", "*", "id", True)
+        f_estimates = executor.submit(_fetch_table, "quotation_estimates_invoices")
+        f_components = executor.submit(_fetch_table, "quotation_cost_components")
+        f_companies = executor.submit(_fetch_table, "companies", "*", "name", False)
+        f_projects = executor.submit(_fetch_table, "projects", "*", "name", False)
+
+    ledgers_res = f_ledgers.result()
+    vouchers_res = f_vouchers.result()
+    advances_res = f_advances.result()
+    spends_res = f_spends.result()
+    quotations_res = f_quotations.result()
+    estimates_res = f_estimates.result()
+    components_res = f_components.result()
+    companies_res = f_companies.result()
+    projects_res = f_projects.result()
 
     return {
         "ledgers": db.to_df(ledgers_res, columns=["id", "project_id", "type", "title", "cheque_number", "voucher_ref_id", "amount", "created_at"]),
         "vouchers": db.to_df(vouchers_res, columns=["id", "company_id", "project_id", "title", "amount", "remarks", "type", "created_by", "review_remarks", "status", "created_at"]),
         "advances": db.to_df(advances_res, columns=["id", "project_id", "person_name", "allocated_amount"]),
-        "spends": db.to_df(spends_res, columns=["id", "advance_id", "item_name", "amount_spent", "created_at"])
+        "spends": db.to_df(spends_res, columns=["id", "advance_id", "item_name", "amount_spent", "created_at"]),
+        "quotations": db.to_df(quotations_res, columns=["id", "company_name", "project_name", "quotation_number", "amount", "status", "lead_generator", "created_by", "notes", "created_at"]),
+        "estimates": db.to_df(estimates_res, columns=["id", "quotation_id", "invoice_number", "est_material_cost", "est_labor_cost", "est_overhead_cost", "invoice_amount", "invoice_status", "updated_by", "created_at"]),
+        "components": db.to_df(components_res, columns=["id", "quotation_id", "component_name", "price", "description", "actual_price", "purchaser_notes", "purchased_by", "created_by", "created_at"]),
+        "companies": db.to_df(companies_res, columns=["id", "name", "site", "description"]),
+        "projects": db.to_df(projects_res, columns=["id", "company_id", "name", "description"])
     }
 
 def _safe_float(value):
@@ -108,137 +148,203 @@ def _safe_float(value):
         return 0.0
     return float(value)
 
+def _invalidate_data_cache():
+    """Targeted cache invalidation — only clears the bulk data fetch, not every cached function."""
+    fetch_all_table_data.clear()
+
 def confirm_and_rerun(message, icon="✅"):
-    """Shows a toast confirmation, clears cached reads, then reruns."""
+    """Shows a toast confirmation, clears ONLY the data cache, then reruns."""
     st.toast(message, icon=icon)
-    st.cache_data.clear()
+    _invalidate_data_cache()
     st.rerun()
 
 def confirm_warn_and_rerun(message, icon="⚠️"):
     """Same as confirm_and_rerun but for warnings/declines/removals."""
     st.toast(message, icon=icon)
-    st.cache_data.clear()
+    _invalidate_data_cache()
     st.rerun()
 
-def get_project_balance(project_id):
-    tables = fetch_all_table_data()
+def auto_provision_project(company_name, project_name):
+    if not company_name or not project_name:
+        return
+    co_name = company_name.strip()
+    p_name = project_name.strip()
+    try:
+        # Check existing company
+        res_co = sb.table("companies").select("id").ilike("name", co_name).execute()
+        if res_co.data:
+            company_id = int(res_co.data[0]["id"])
+        else:
+            res_ins_co = sb.table("companies").insert({"name": co_name}).execute()
+            company_id = int(res_ins_co.data[0]["id"])
+
+        # Check existing project under this company
+        res_p = sb.table("projects").select("id").eq("company_id", company_id).ilike("name", p_name).execute()
+        if not res_p.data:
+            sb.table("projects").insert({
+                "company_id": company_id,
+                "name": p_name,
+                "description": None
+            }).execute()
+        _invalidate_data_cache()
+    except Exception as e:
+        print(f"Auto-provisioning failed: {e}")
+
+def _compute_all_balances(tables):
+    """Single-pass batch computation of ALL project balances. Returns dict keyed by project_id."""
+    _zero = {"income": 0.0, "expense": 0.0, "loans": 0.0, "advances_allocated": 0.0, "advances_spent": 0.0, "advances_remaining": 0.0, "balance": 0.0, "profit": 0.0}
     
-    # 1. Ledgers
     l_df = tables["ledgers"]
-    proj_ledgers = l_df[l_df["project_id"] == project_id] if not l_df.empty else pd.DataFrame()
-    income = proj_ledgers[proj_ledgers["type"] == "income"]["amount"].apply(_safe_float).sum() if not proj_ledgers.empty else 0.0
-    expense = proj_ledgers[proj_ledgers["type"] == "expense"]["amount"].apply(_safe_float).sum() if not proj_ledgers.empty else 0.0
-    loans = proj_ledgers[proj_ledgers["type"] == "loan"]["amount"].apply(_safe_float).sum() if not proj_ledgers.empty else 0.0
-
-    # 2. Approved Vouchers
     v_df = tables["vouchers"]
-    if not v_df.empty:
-        app_v = v_df[(v_df["project_id"] == project_id) & (v_df["status"] == "Approved")]
-        approved_vouchers_sum = app_v["amount"].apply(_safe_float).sum()
-    else:
-        approved_vouchers_sum = 0.0
-
-    # 3. Advances & Spends
     adv_df = tables["advances"]
     sp_df = tables["spends"]
     
-    proj_adv = adv_df[adv_df["project_id"] == project_id] if not adv_df.empty else pd.DataFrame()
-    total_allocated = proj_adv["allocated_amount"].apply(_safe_float).sum() if not proj_adv.empty else 0.0
-    total_spent = 0.0
+    # Pre-convert amounts to float once
+    if not l_df.empty:
+        l_df = l_df.copy()
+        l_df["_amt"] = l_df["amount"].apply(_safe_float)
+        income_by_proj = l_df[l_df["type"] == "income"].groupby("project_id")["_amt"].sum()
+        expense_by_proj = l_df[l_df["type"] == "expense"].groupby("project_id")["_amt"].sum()
+        loan_by_proj = l_df[l_df["type"] == "loan"].groupby("project_id")["_amt"].sum()
+    else:
+        income_by_proj = expense_by_proj = loan_by_proj = pd.Series(dtype=float)
 
-    if not proj_adv.empty and not sp_df.empty:
-        a_ids = proj_adv["id"].astype(int).tolist()
-        matching_spends = sp_df[sp_df["advance_id"].isin(a_ids)]
-        total_spent = matching_spends["amount_spent"].apply(_safe_float).sum()
+    if not v_df.empty:
+        approved_v = v_df[v_df["status"] == "Approved"].copy()
+        approved_v["_amt"] = approved_v["amount"].apply(_safe_float)
+        voucher_by_proj = approved_v.groupby("project_id")["_amt"].sum()
+    else:
+        voucher_by_proj = pd.Series(dtype=float)
 
-    unspent_cash_returned = total_allocated - total_spent
+    if not adv_df.empty:
+        adv_df_c = adv_df.copy()
+        adv_df_c["_amt"] = adv_df_c["allocated_amount"].apply(_safe_float)
+        alloc_by_proj = adv_df_c.groupby("project_id")["_amt"].sum()
+        
+        if not sp_df.empty:
+            sp_df_c = sp_df.copy()
+            sp_df_c["_amt"] = sp_df_c["amount_spent"].apply(_safe_float)
+            # Map advance_id -> project_id
+            adv_proj_map = dict(zip(adv_df_c["id"].astype(int), adv_df_c["project_id"]))
+            sp_df_c["project_id"] = sp_df_c["advance_id"].astype(int).map(adv_proj_map)
+            spent_by_proj = sp_df_c.dropna(subset=["project_id"]).groupby("project_id")["_amt"].sum()
+        else:
+            spent_by_proj = pd.Series(dtype=float)
+    else:
+        alloc_by_proj = spent_by_proj = pd.Series(dtype=float)
 
-    balance = income + loans - expense - approved_vouchers_sum - total_allocated
-    profit = income - expense - approved_vouchers_sum - total_allocated
+    # Collect all unique project IDs
+    all_pids = set()
+    for s in [income_by_proj, expense_by_proj, loan_by_proj, voucher_by_proj, alloc_by_proj, spent_by_proj]:
+        all_pids.update(s.index)
 
-    return {
-        "income": income, "expense": expense + approved_vouchers_sum, "loans": loans,
-        "advances_allocated": total_allocated, "advances_spent": total_spent,
-        "advances_remaining": unspent_cash_returned, "balance": balance, "profit": profit
-    }
+    result = {}
+    for pid in all_pids:
+        inc = income_by_proj.get(pid, 0.0)
+        exp = expense_by_proj.get(pid, 0.0)
+        ln = loan_by_proj.get(pid, 0.0)
+        vch = voucher_by_proj.get(pid, 0.0)
+        alloc = alloc_by_proj.get(pid, 0.0)
+        spent = spent_by_proj.get(pid, 0.0)
+        
+        total_exp = exp + vch
+        balance = inc + ln - total_exp - alloc
+        profit = inc - total_exp - alloc
+        
+        result[pid] = {
+            "income": inc, "expense": total_exp, "loans": ln,
+            "advances_allocated": alloc, "advances_spent": spent,
+            "advances_remaining": alloc - spent, "balance": balance, "profit": profit
+        }
+    
+    return result, _zero
 
-def get_company_balance(company_id):
+def get_project_balance(project_id, _precomputed=None, _zero=None):
+    """Get balance for a single project. Uses precomputed dict if available."""
+    if _precomputed is not None:
+        return _precomputed.get(project_id, _zero or {"income": 0.0, "expense": 0.0, "loans": 0.0, "advances_allocated": 0.0, "advances_spent": 0.0, "advances_remaining": 0.0, "balance": 0.0, "profit": 0.0})
+    tables = fetch_all_table_data()
+    balances, zero = _compute_all_balances(tables)
+    return balances.get(project_id, zero)
+
+def get_company_balance(company_id, _precomputed=None, _zero=None):
+    """Get aggregated balance for all projects under a company."""
     projects_df = get_projects_full(company_id)
+    empty_bal = {"income": 0.0, "expense": 0.0, "loans": 0.0, "advances_allocated": 0.0, "advances_spent": 0.0, "advances_remaining": 0.0, "balance": 0.0, "profit": 0.0}
     if projects_df.empty:
-        return {"income": 0.0, "expense": 0.0, "loans": 0.0, "advances_allocated": 0.0, "advances_spent": 0.0, "advances_remaining": 0.0, "balance": 0.0, "profit": 0.0}
+        return empty_bal
 
-    pids_list = projects_df["id"].astype(int).tolist()
-    tables = fetch_all_table_data()
+    if _precomputed is None:
+        tables = fetch_all_table_data()
+        _precomputed, _zero = _compute_all_balances(tables)
 
-    # Ledgers
-    l_df = tables["ledgers"]
-    comp_ledgers = l_df[l_df["project_id"].isin(pids_list)] if not l_df.empty else pd.DataFrame()
-    income = comp_ledgers[comp_ledgers["type"] == "income"]["amount"].apply(_safe_float).sum() if not comp_ledgers.empty else 0.0
-    expense = comp_ledgers[comp_ledgers["type"] == "expense"]["amount"].apply(_safe_float).sum() if not comp_ledgers.empty else 0.0
-    loans = comp_ledgers[comp_ledgers["type"] == "loan"]["amount"].apply(_safe_float).sum() if not comp_ledgers.empty else 0.0
-
-    # Approved Vouchers
-    v_df = tables["vouchers"]
-    if not v_df.empty:
-        app_v = v_df[(v_df["project_id"].isin(pids_list)) & (v_df["status"] == "Approved")]
-        approved_vouchers_sum = app_v["amount"].apply(_safe_float).sum()
-    else:
-        approved_vouchers_sum = 0.0
+    totals = dict(empty_bal)
+    for pid in projects_df["id"].astype(int).tolist():
+        pb = _precomputed.get(pid, _zero or empty_bal)
+        for k in totals:
+            totals[k] += pb[k]
     
-    expense += approved_vouchers_sum
+    # Recalculate balance and profit from aggregated values
+    totals["balance"] = totals["income"] + totals["loans"] - totals["expense"] - totals["advances_allocated"]
+    totals["profit"] = totals["income"] - totals["expense"] - totals["advances_allocated"]
+    return totals
 
-    # Advances & Spends
-    adv_df = tables["advances"]
-    sp_df = tables["spends"]
+EXEC_TAG = "[Created in Execution(Accounts)]"
 
-    comp_adv = adv_df[adv_df["project_id"].isin(pids_list)] if not adv_df.empty else pd.DataFrame()
-    total_allocated = comp_adv["allocated_amount"].apply(_safe_float).sum() if not comp_adv.empty else 0.0
-    total_spent = 0.0
+def get_all_companies(include_execution_created=True):
+    tables = fetch_all_table_data()
+    c_df = tables["companies"]
+    if not include_execution_created and not c_df.empty and "description" in c_df.columns:
+        return c_df[~c_df["description"].fillna("").str.contains(EXEC_TAG, regex=False)]
+    return c_df
 
-    if not comp_adv.empty and not sp_df.empty:
-        a_ids = comp_adv["id"].astype(int).tolist()
-        matching_spends = sp_df[sp_df["advance_id"].isin(a_ids)]
-        total_spent = matching_spends["amount_spent"].apply(_safe_float).sum()
+def get_projects_full(company_id, include_execution_created=True):
+    tables = fetch_all_table_data()
+    p_df = tables["projects"]
+    if not p_df.empty:
+        filtered = p_df[p_df["company_id"] == company_id]
+        if not include_execution_created and "description" in filtered.columns:
+            filtered = filtered[~filtered["description"].fillna("").str.contains(EXEC_TAG, regex=False)]
+        return filtered
+    return pd.DataFrame(columns=["id", "company_id", "name", "description"])
 
-    unspent_cash_returned = total_allocated - total_spent
+def get_projects_names(company_id, include_execution_created=True):
+    projects_df = get_projects_full(company_id, include_execution_created=include_execution_created)
+    if not projects_df.empty:
+        return projects_df[["id", "name"]]
+    return pd.DataFrame(columns=["id", "name"])
 
-    return {
-        "income": income, "expense": expense, "loans": loans,
-        "advances_allocated": total_allocated, "advances_spent": total_spent, "advances_remaining": unspent_cash_returned,
-        "balance": income + loans - expense - total_allocated,
-        "profit": income - expense - total_allocated
-    }
-
-# --- Cached read-only lookups used at multiple call sites
-@st.cache_data(ttl=300, show_spinner=False)
-def get_all_companies():
-    res = sb.table("companies").select("*").order("name").execute()
-    return db.to_df(res, columns=["id", "name", "site", "description"])
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_projects_full(company_id):
-    res = sb.table("projects").select("id, name, description").eq("company_id", company_id).order("name").execute()
-    return db.to_df(res, columns=["id", "name", "description"])
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_projects_names(company_id):
-    res = sb.table("projects").select("id, name").eq("company_id", company_id).order("name").execute()
-    return db.to_df(res, columns=["id", "name"])
-
-@st.cache_data(ttl=300, show_spinner=False)
 def get_users_by_role(role_name):
-    res = sb.table("users").select("username").eq("role", role_name).order("username").execute()
-    return [r["username"] for r in res.data] if res.data else []
+    all_users = get_all_users_summary()
+    if not all_users.empty:
+        return all_users[all_users["role"].astype(str).str.contains(role_name, case=False, na=False)]["username"].tolist()
+    return []
 
-@st.cache_data(ttl=300, show_spinner=False)
 def get_all_users_summary():
     res = sb.table("users").select("id, username, role").order("username").execute()
     return db.to_df(res, columns=["id", "username", "role"])
 
-@st.cache_data(ttl=300, show_spinner=False)
 def get_all_vouchers_raw():
-    res = sb.table("vouchers").select("*, companies(name), projects(name)").order("id", desc=True).execute()
-    return res.data or []
+    tables = fetch_all_table_data()
+    v_df = tables["vouchers"]
+    c_df = tables["companies"]
+    p_df = tables["projects"]
+
+    if v_df.empty:
+        return []
+
+    c_map = dict(zip(c_df["id"].astype(int), c_df["name"])) if not c_df.empty else {}
+    p_map = dict(zip(p_df["id"].astype(int), p_df["name"])) if not p_df.empty else {}
+
+    raw_list = []
+    for _, row in v_df.iterrows():
+        v_dict = row.to_dict()
+        cid = int(row["company_id"]) if not pd.isna(row["company_id"]) else None
+        pid = int(row["project_id"]) if not pd.isna(row["project_id"]) else None
+        v_dict["companies"] = {"name": c_map.get(cid, "—")} if cid else None
+        v_dict["projects"] = {"name": p_map.get(pid, "—")} if pid else None
+        raw_list.append(v_dict)
+    return raw_list
 
 # ==============================================================================
 # 2. DESIGN & STYLING ASSETS (High Density Professional Overrides)
@@ -246,131 +352,769 @@ def get_all_vouchers_raw():
 
 st.markdown("""
 <style>
-.block-container { padding-top: 0.5rem; padding-bottom: 0.5rem; }
-div.stBlock { margin-bottom: 0.25rem !important; padding-bottom: 0px !important; }
-.stTabs { margin-top: 0px !important; }
-.stDataFrame { margin-bottom: 0.5rem !important; }
-h1 { margin-top: 0px !important; padding-top: 0px !important; font-size: 1.85rem !important; }
-h2 { margin-top: 0.4rem !important; font-size: 1.3rem !important; }
-h3 { margin-top: 0.3rem !important; font-size: 1.1rem !important; }
-div[data-testid="stForm"] { padding: 0.6rem !important; margin-bottom: 0.4rem !important; border-radius: 8px !important; }
+/* Hide default Streamlit input instructions ("Press Enter to apply") */
+div[data-testid="InputInstructions"] {
+    display: none !important;
+}
 
+/* === MONOCHROME DESIGN SYSTEM & DENSITY === */
+body, html, .main, [data-testid="stAppViewContainer"], [data-testid="stApp"], [data-testid="stAppViewBlockContainer"], div[data-testid="stHeader"], header {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #111111 !important;
+}
+div[data-testid="stDecoration"] {
+    display: none !important;
+}
+section[data-testid="stSidebar"], [data-testid="stSidebarUserContent"], section[data-testid="stSidebar"] * {
+    background-color: #f9fafb !important;
+}
+section[data-testid="stSidebar"], [data-testid="stSidebarUserContent"] {
+    width: 14rem;
+    background-color: #f9fafb !important;
+    border-right: none !important;
+    border: none !important;
+}
+section[data-testid="stSidebar"] .block-container {
+    padding: 2.2rem 0.4rem 0.3rem 0.4rem !important;
+    background-color: #f9fafb !important;
+}
+.block-container { padding: 5.5rem 0.5rem 0.15rem 0.5rem !important; max-width: 100% !important; background-color: #ffffff !important; }
+div.stBlock { margin-bottom: 0px !important; padding-bottom: 0px !important; }
+div[data-testid="stVerticalBlock"] > div { gap: 0.15rem !important; }
+.stTabs { margin-top: 0px !important; }
+.stTabs [data-baseweb="tab-list"] { gap: 0px !important; background-color: #f3f4f6 !important; border-bottom: 1px solid #d1d5db !important; }
+.stTabs [data-baseweb="tab"] { font-size: 0.94rem !important; padding: 6px 10px !important; line-height: 1.3 !important; color: #4b5563 !important; background-color: transparent !important; }
+.stTabs [data-baseweb="tab"][aria-selected="true"] { color: #111111 !important; font-weight: bold !important; border-bottom: 2px solid #111111 !important; background-color: #ffffff !important; }
+.stDataFrame { margin-bottom: 0.15rem !important; }
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 { color: #111111 !important; }
+h1 { margin: 0.3rem 0 !important; font-size: 1.6rem !important; line-height: 1.5 !important; }
+h2 { margin: 0.2rem 0 !important; font-size: 1.3rem !important; line-height: 1.4 !important; }
+h3 { margin: 0.15rem 0 !important; font-size: 1.15rem !important; line-height: 1.4 !important; }
+h4 { margin: 0.15rem 0 !important; font-size: 1.05rem !important; line-height: 1.4 !important; }
+h5 { margin: 0.1rem 0 !important; font-size: 0.95rem !important; line-height: 1.3 !important; }
+p, li, span, strong, code, em, small { font-size: 1.0rem !important; line-height: 1.4 !important; color: #1f2937 !important; }
+
+/* Forms & Inputs */
+div[data-testid="stForm"] { padding: 0.25rem 0.4rem !important; margin-bottom: 0.1rem !important; border-radius: 4px !important; border: 1px solid #d1d5db !important; background-color: #ffffff !important; }
+label { font-size: 0.9rem !important; font-weight: 600 !important; margin-bottom: 0px !important; color: #111111 !important; }
+div[data-testid="stWidgetLabel"], div[data-testid="stWidgetLabel"] *, label[data-testid="stWidgetLabel"], label[data-testid="stWidgetLabel"] * {
+    margin-bottom: 0px !important;
+    padding-bottom: 0px !important;
+    margin-top: 0px !important;
+    line-height: 1.2 !important;
+}
+div[data-testid="stSelectbox"] > div, div[data-testid="stTextInput"] > div, div[data-testid="stNumberInput"] > div, div[data-testid="stTextArea"] > div {
+    gap: 2px !important;
+}
+div[data-baseweb="input"], div[data-baseweb="select"], div[data-baseweb="textarea"], div[data-baseweb="base-input"], input, select, textarea {
+    min-height: 1.6rem !important;
+    padding: 0px 3px !important;
+    font-size: 0.92rem !important;
+    border: 1px solid #cbd5e1 !important;
+    background-color: #f9fafb !important;
+    color: #111111 !important;
+}
+div[data-baseweb="input"] input, div[data-baseweb="select"] *, div[data-baseweb="textarea"] textarea, input, select, textarea {
+    color: #111111 !important;
+    background-color: transparent !important;
+}
+.stSelectbox, .stTextInput, .stNumberInput, .stTextArea { margin-bottom: 0.05rem !important; }
+
+/* Dropdowns / Selectboxes: Remove blinking text caret, input box artifact & use pointer cursor */
+.stSelectbox, .stSelectbox *, div[data-baseweb="select"], div[data-baseweb="select"] *, div[role="combobox"], div[role="combobox"] * {
+    caret-color: transparent !important;
+    cursor: pointer !important;
+}
+div[data-baseweb="select"] input, div[role="combobox"] input {
+    caret-color: transparent !important;
+    width: 0px !important;
+    max-width: 0px !important;
+    opacity: 0 !important;
+    position: absolute !important;
+    pointer-events: none !important;
+}
+
+/* Text, Digit, and Textarea fields: Keep text cursor & active blinking caret */
+.stTextInput input, .stNumberInput input, .stTextArea textarea, div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea, input[type="text"], input[type="number"], textarea {
+    caret-color: #111111 !important;
+    cursor: text !important;
+}
+
+/* Buttons & Popovers */
+.stButton button, button, div[data-testid="stPopover"] button {
+    padding: 0.1rem 0.4rem !important;
+    font-size: 0.9rem !important;
+    min-height: 1.5rem !important;
+    border-radius: 3px !important;
+    background-color: #e5e7eb !important;
+    color: #111111 !important;
+    border: 1px solid #cbd5e1 !important;
+}
+.stButton button:hover, button:hover, div[data-testid="stPopover"] button:hover {
+    background-color: #d1d5db !important;
+    border-color: #94a3b8 !important;
+    color: #000000 !important;
+}
+
+/* Metrics */
+div[data-testid="stMetricValue"] { font-size: 0.82rem !important; font-weight: 700 !important; line-height: 1.2 !important; color: #111111 !important; }
+div[data-testid="stMetricLabel"] { font-size: 0.7rem !important; margin-bottom: 0px !important; line-height: 1.1 !important; color: #4b5563 !important; }
+div[data-testid="stMetricDelta"] { font-size: 0.58rem !important; }
+div[data-testid="stMetric"] { padding: 2px 5px !important; background: #f9fafb !important; border-radius: 4px; border: 1px solid #d1d5db !important; }
+
+/* Expanders */
+div[data-testid="stExpander"] { margin-bottom: 0.1rem !important; border: 1px solid #d1d5db !important; background-color: #ffffff !important; }
+div[data-testid="stExpander"] summary { font-size: 0.88rem !important; padding: 3px 6px !important; background-color: #f9fafb !important; color: #111111 !important; }
+div[data-testid="stExpander"] div[data-testid="stExpanderDetails"] { padding: 0.2rem 0.4rem !important; }
+
+/* Containers */
+div[data-testid="stHorizontalBlock"] { gap: 0.25rem !important; }
+div[data-testid="column"] { padding: 0 0.1rem !important; }
+.stAlert { padding: 0.2rem 0.4rem !important; font-size: 0.85rem !important; margin-bottom: 0.1rem !important; background-color: #f3f4f6 !important; border: 1px solid #d1d5db !important; border-left: 4px solid #111111 !important; color: #111111 !important; }
+.stAlert p { font-size: 0.85rem !important; margin: 0 !important; color: #111111 !important; }
+
+/* Dividers */
+hr { margin: 0.15rem 0 !important; border-color: #e5e7eb !important; }
+
+/* Radio nav in sidebar */
+section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] {
+    gap: 6px !important;
+    padding: 0px !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"] > div:first-child {
+    display: none !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"] {
+    padding: 8px 12px !important;
+    margin: 0px !important;
+    border-radius: 6px !important;
+    background-color: transparent !important;
+    border-left: none !important;
+    border: none !important;
+    width: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    cursor: pointer !important;
+    transition: all 0.2s ease !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:hover {
+    background-color: #f3f4f6 !important;
+    border-left: none !important;
+    border: none !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:has(input[type="radio"]:checked) {
+    background-color: #e5e7eb !important;
+    border-left: none !important;
+    border: none !important;
+}
+section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:has(input[type="radio"]:checked) p,
+section[data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] label[data-baseweb="radio"]:has(input[type="radio"]:checked) span {
+    font-weight: 700 !important;
+    color: #111111 !important;
+}
+
+/* Popover */
+div[data-testid="stPopover"] button { font-size: 0.82rem !important; padding: 0.1rem 0.35rem !important; }
+
+/* Cards */
+.compact-card {
+border: 1px solid #d1d5db;
+border-radius: 4px;
+padding: 4px 7px;
+margin-bottom: 3px;
+background-color: #ffffff;
+color: #111111 !important;
+box-shadow: 0 1px 1px rgba(0,0,0,0.01);
+}
+.compact-card h4 { font-size: 0.85rem !important; color: #111111 !important; margin: 0 !important; }
+.compact-card h3 { font-size: 0.95rem !important; color: #111111 !important; margin: 0 !important; }
+.compact-card p, .compact-card span, .compact-card small, .compact-card strong, .compact-card em { font-size: 0.74rem !important; color: #4b5563 !important; }
+
+/* Voucher cards */
 .voucher-card {
-background: rgba(30, 41, 59, 0.45) !important;
-border: 1px solid #475569 !important;
-border-left: 5px solid #3b82f6 !important;
-border-radius: 6px;
-padding: 10px 14px;
-margin-bottom: 6px;
+background: #ffffff !important;
+border: 1px solid #d1d5db !important;
+border-left: 4px solid #111111 !important;
+border-radius: 4px;
+padding: 3px 7px;
+margin-bottom: 2px;
+color: #111111 !important;
 }
 .voucher-card.alt {
-background: rgba(15, 23, 42, 0.65) !important;
-border: 1px solid #334155 !important;
-border-left: 5px solid #0ea5e9 !important;
+background: #f9fafb !important;
+border: 1px solid #d1d5db !important;
+border-left: 4px solid #374151 !important;
 }
-.voucher-title { font-size: 0.98rem; font-weight: 700; color: #f8fafc; }
-.voucher-meta { font-size: 0.8rem; color: #94a3b8; margin-top: 2px; }
-.voucher-remarks { font-size: 0.82rem; margin-top: 4px; padding: 4px 8px; background: rgba(0, 0, 0, 0.2); border-radius: 4px; border-left: 2px solid #64748b; color: #cbd5e1; }
+.voucher-title { font-size: 0.74rem; font-weight: 700; color: #111111 !important; }
+.voucher-meta { font-size: 0.62rem; color: #4b5563 !important; margin-top: 0px; }
+.voucher-remarks { font-size: 0.65rem; margin-top: 1px; padding: 1px 4px; background: #f3f4f6 !important; border-radius: 3px; border-left: 2px solid #111111; color: #1f2937 !important; }
+
+/* Button Inner Text / Code Blocks / Overlays Color Fixes */
+.stButton button *, button *, div[data-testid="stPopover"] button * {
+    color: #111111 !important;
+}
+code {
+    background-color: #f3f4f6 !important;
+    color: #1f2937 !important;
+    padding: 2px 4px !important;
+    border-radius: 3px !important;
+    font-family: monospace !important;
+    font-size: 0.85rem !important;
+}
+div[role="listbox"], ul[role="listbox"], div[data-baseweb="menu"] {
+    background-color: #ffffff !important;
+    color: #111111 !important;
+}
+div[role="option"], li[role="option"], div[data-baseweb="menu"] * {
+    background-color: #ffffff !important;
+    color: #111111 !important;
+}
+div[role="option"]:hover, li[role="option"]:hover {
+    background-color: #f3f4f6 !important;
+    color: #111111 !important;
+}
+div[data-baseweb="calendar"] * {
+    background-color: #ffffff !important;
+    color: #111111 !important;
+}
+div[data-baseweb="calendar"] button:hover {
+    background-color: #f3f4f6 !important;
+}
+
+/* Toast, Modals, Dialogs, Tooltips, Popovers Grayscale Color Overrides */
+div[data-testid="stToast"] {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #111111 !important;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1) !important;
+}
+div[data-testid="stToast"] * {
+    color: #111111 !important;
+}
+div[data-baseweb="popover"], div[data-baseweb="popover"] * {
+    background-color: #ffffff !important;
+    color: #111111 !important;
+}
+div[role="dialog"], div[data-baseweb="modal"], div[data-baseweb="modal"] * {
+    background-color: #ffffff !important;
+    color: #111111 !important;
+}
+div[role="tooltip"], div[role="tooltip"] * {
+    background-color: #f9fafb !important;
+    color: #111111 !important;
+    border: 1px solid #cbd5e1 !important;
+}
+.stAlert, .stAlert * {
+    color: #111111 !important;
+}
+
+/* Print Media Stylesheet */
+@media print {
+    /* Hide navigation sidebar and interactive controls */
+    section[data-testid="stSidebar"], 
+    .stButton, 
+    button, 
+    form, 
+    header, 
+    footer,
+    div[data-testid="stHeader"],
+    div[data-testid="stForm"],
+    div[data-testid="stExpander"] button,
+    div[data-baseweb="popover"],
+    div[class*="stFormSubmitButton"] { 
+        display: none !important; 
+    }
+    
+    /* Reset main layout container to full page */
+    .block-container {
+        padding: 0 !important;
+        margin: 0 !important;
+        max-width: 100% !important;
+        background-color: #ffffff !important;
+        color: #000000 !important;
+    }
+    
+    /* Force page backgrounds to white and text to black */
+    body, html, [data-testid="stAppViewContainer"], [data-testid="stApp"] {
+        background-color: #ffffff !important;
+        background: #ffffff !important;
+        color: #000000 !important;
+    }
+    
+    /* Force high contrast text on all printable items */
+    p, li, span, h1, h2, h3, h4, h5, h6, strong, div, td, th, code, small, em {
+        color: #000000 !important;
+    }
+    
+    /* Print cards with a clean solid light theme instead of dark/translucent gradients */
+    .compact-card, .voucher-card, .voucher-card.alt {
+        background-color: #ffffff !important;
+        background: #ffffff !important;
+        border: 1px solid #1f2937 !important;
+        border-left: 4px solid #1f2937 !important;
+        color: #000000 !important;
+        box-shadow: none !important;
+        page-break-inside: avoid;
+    }
+    
+    .voucher-title { color: #000000 !important; font-weight: bold; }
+    .voucher-meta { color: #374151 !important; }
+    .voucher-remarks { background: #f3f4f6 !important; border: 1px solid #d1d5db !important; color: #1f2937 !important; }
+}
 </style>
 """, unsafe_allow_html=True)
 
-logo_path = "logo.jpeg" if os.path.exists("logo.jpeg") else ("logo.jpg" if os.path.exists("logo.jpg") else None)
-if logo_path:
-    st.sidebar.image(logo_path, use_container_width=True)
-st.sidebar.markdown("### MTEG")
-st.sidebar.success("Live Supabase Synced", icon="⚡")
+def render_planning_section(role, current_user, q_df, comp_all_df):
+    st.markdown("##### 📑 Amount Justification & Planning")
+
+    if q_df.empty:
+        st.caption("No quotations yet. Add quotations in the Directory first.")
+        return
+
+    # Filter bar
+    plan_f1, plan_f2 = st.columns([2, 1])
+    p_search = plan_f1.text_input("🔍 Search Quotation for Planning", placeholder="Search by company, project, ref #, or lead generator...", key="plan_search_in")
+    
+    # Lead generator dropdown filter
+    all_lgs = sorted(list(set(q_df["lead_generator"].dropna().astype(str).str.strip().unique()) - {"", "None", "nan"}))
+    p_lg = plan_f2.selectbox("Filter Lead Generator", ["All Lead Generators"] + all_lgs, key="plan_lg_in")
+
+    disp_p_df = q_df.copy()
+    if p_lg != "All Lead Generators":
+        disp_p_df = disp_p_df[disp_p_df["lead_generator"] == p_lg]
+
+    if p_search.strip():
+        psq = p_search.strip().lower()
+        disp_p_df = disp_p_df[
+            disp_p_df["company_name"].astype(str).str.lower().str.contains(psq) |
+            disp_p_df["project_name"].astype(str).str.lower().str.contains(psq) |
+            disp_p_df["quotation_number"].astype(str).str.lower().str.contains(psq) |
+            disp_p_df["lead_generator"].astype(str).str.lower().str.contains(psq)
+        ]
+
+    if disp_p_df.empty:
+        st.warning("No quotations found matching the filter criteria.")
+        return
+
+    for idx, q_row in disp_p_df.iterrows():
+        q_id = int(q_row["id"])
+        q_amount = _safe_float(q_row["amount"])
+        q_lg_disp = str(q_row["lead_generator"]) if q_row.get("lead_generator") and str(q_row["lead_generator"]).strip() not in ("None", "nan", "") else "Unassigned"
+
+        q_comp_df = comp_all_df[comp_all_df["quotation_id"] == q_id] if not comp_all_df.empty else pd.DataFrame()
+        total_itemized_cost = q_comp_df["price"].apply(_safe_float).sum() if not q_comp_df.empty else 0.0
+        variance = q_amount - total_itemized_cost
+
+        with st.expander(f"📑 {q_row['quotation_number']} — {q_row['company_name']} ({q_row['project_name']}) | Quoted Amount: PKR {q_amount:,.0f} | LG: {q_lg_disp}", expanded=False):
+            total_purchaser_quote = q_comp_df["actual_price"].apply(_safe_float).sum() if not q_comp_df.empty else 0.0
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Quoted Amount", f"PKR {q_amount:,.0f}")
+            m2.metric("Initial Amount Summed", f"PKR {total_itemized_cost:,.0f}")
+            m3.metric("Purchaser Market Quote", f"PKR {total_purchaser_quote:,.0f}" if total_purchaser_quote > 0 else "Pending")
+
+            st.markdown("##### 📦 Itemized Justification Components & Purchaser Market Quotes")
+            if q_comp_df.empty:
+                st.caption("No cost components added yet to justify this quotation amount.")
+            else:
+                for _, comp_row in q_comp_df.iterrows():
+                    comp_id = int(comp_row["id"])
+                    planned_p = _safe_float(comp_row['price'])
+                    actual_p = _safe_float(comp_row.get('actual_price'))
+                    p_notes = str(comp_row.get('purchaser_notes') or '')
+
+                    c1, c2, c3, c4 = st.columns([3, 2.5, 3.5, 0.8])
+                    c1.markdown(f"📦 **{comp_row['component_name']}**\n\n<small>*{comp_row.get('description') or 'No notes'}*</small>", unsafe_allow_html=True)
+                    c2.markdown(f"**Sender Planned**:<br/>PKR {planned_p:,.0f}", unsafe_allow_html=True)
+                    
+                    if actual_p > 0:
+                        diff = planned_p - actual_p
+                        diff_str = f"<span style='color: #10B981;'>(-PKR {diff:,.0f} saved)</span>" if diff >= 0 else f"<span style='color: #EF4444;'>(+PKR {-diff:,.0f} overrun)</span>"
+                        c3.markdown(f"**Purchaser Quote**: PKR {actual_p:,.0f} {diff_str}<br/><small>Supplier: {p_notes if p_notes else '—'}</small>", unsafe_allow_html=True)
+                    else:
+                        c3.markdown("🟡 *Pending Purchaser Quote*")
+
+                    if role != "CEO":
+                        if c4.button("🗑️", key=f"del_plan_comp_{comp_id}", help="Delete item"):
+                            try:
+                                sb.table("quotation_cost_components").delete().eq("id", comp_id).execute()
+                                confirm_warn_and_rerun(f"Removed component '{comp_row['component_name']}'.", icon="🗑️")
+                            except Exception as e:
+                                st.error(f"Error removing item: {e}")
+
+            if role != "CEO":
+                st.markdown("---")
+                with st.form(f"add_justification_form_{q_id}", clear_on_submit=True):
+                    st.markdown("➕ **Add Amount Justification Component**")
+                    fc1, fc2 = st.columns([3, 2])
+                    comp_name_in = fc1.text_input("Component Name*", placeholder="e.g. 500m Fiber Optic Cable", key=f"pname_{q_id}")
+                    comp_price_in = fc2.number_input("Price / Cost (PKR)*", value=None, min_value=0.0, step=1000.0, placeholder="Enter Price (PKR)", key=f"pprice_{q_id}")
+                    comp_desc_in = st.text_area("Description / Notes", placeholder="Technical details or supplier notes...", height=40, key=f"pdesc_{q_id}")
+                    
+                    if st.form_submit_button("➕ Add Component & Update Sum", type="primary"):
+                        if comp_name_in.strip() and comp_price_in is not None and comp_price_in > 0:
+                            try:
+                                sb.table("quotation_cost_components").insert({
+                                    "quotation_id": q_id,
+                                    "component_name": comp_name_in.strip(),
+                                    "price": float(comp_price_in),
+                                    "description": comp_desc_in.strip() or None,
+                                    "created_by": current_user["username"]
+                                }).execute()
+                                confirm_and_rerun(f"➕ Added component '{comp_name_in.strip()}' (PKR {comp_price_in:,.0f}).", icon="📑")
+                            except Exception as e:
+                                st.error(f"Could not save component: {e}")
+                        else:
+                            st.error("Please enter a valid component name and non-zero price.")
+
+def render_purchaser_analytics_view(role, current_user):
+    st.markdown("### 🛍️ Purchaser Analytics & Procurement Performance")
+
+    tables = fetch_all_table_data()
+    comp_all_df = tables.get("components", pd.DataFrame())
+    q_all_df = tables.get("quotations", pd.DataFrame())
+
+    merged_df = comp_all_df.copy() if not comp_all_df.empty else pd.DataFrame()
+    if not merged_df.empty and not q_all_df.empty:
+        q_sub = q_all_df[["id", "quotation_number", "company_name", "project_name"]]
+        merged_df = merged_df.merge(q_sub, left_on="quotation_id", right_on="id", how="left", suffixes=("", "_q"))
+
+    if not merged_df.empty:
+        merged_df["purchased_by"] = merged_df["purchased_by"].fillna("Unassigned")
+        merged_df["actual_price"] = merged_df["actual_price"].apply(_safe_float)
+        merged_df["price"] = merged_df["price"].apply(_safe_float)
+        merged_df["savings"] = merged_df["price"] - merged_df["actual_price"]
+        data_purchasers = sorted(list(set([str(p).strip() for p in merged_df["purchased_by"].unique() if p and str(p).strip() not in ("nan", "None", "", "Unassigned")])))
+    else:
+        data_purchasers = []
+
+    all_purchasers = data_purchasers if data_purchasers else ["Unassigned"]
+
+    filtered_df = merged_df.copy() if not merged_df.empty else pd.DataFrame()
+
+    # Global KPI Metrics
+    reuploaded_df = filtered_df[filtered_df["actual_price"] > 0] if not filtered_df.empty else pd.DataFrame()
+    total_items = len(filtered_df)
+    total_reuploaded = len(reuploaded_df)
+    total_planned = filtered_df["price"].sum() if not filtered_df.empty else 0.0
+    total_actual = reuploaded_df["actual_price"].sum() if not reuploaded_df.empty else 0.0
+    total_planned_for_reuploaded = reuploaded_df["price"].sum() if not reuploaded_df.empty else 0.0
+    total_savings = total_planned_for_reuploaded - total_actual
+    savings_pct = (total_savings / total_planned_for_reuploaded * 100.0) if total_planned_for_reuploaded > 0 else 0.0
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Items Tracked", f"{total_items}", f"{total_reuploaded} Re-Uploaded")
+    k2.metric("Initially Planned Budget", f"PKR {total_planned:,.0f}")
+    k3.metric("Purchase Amount", f"PKR {total_actual:,.0f}")
+    k4.metric("Total Savings Achieved", f"PKR {total_savings:,.0f}", f"{savings_pct:.1f}% Savings", delta_color="normal" if total_savings >= 0 else "inverse")
+
+    st.write("---")
+
+    # Purchaser Individual Summary Performance Cards
+    st.markdown("### 👤 Purchaser Performance & Savings Audit")
+
+    if not all_purchasers or all_purchasers == ["Unassigned"]:
+        st.caption("No purchaser records logged yet.")
+    else:
+        for p_name in all_purchasers:
+            p_items = merged_df[merged_df["purchased_by"] == p_name] if not merged_df.empty else pd.DataFrame()
+            p_reuploaded = p_items[p_items["actual_price"] > 0] if not p_items.empty else pd.DataFrame()
+            p_tot_planned = p_reuploaded["price"].sum() if not p_reuploaded.empty else 0.0
+            p_tot_actual = p_reuploaded["actual_price"].sum() if not p_reuploaded.empty else 0.0
+            p_net_savings = p_tot_planned - p_tot_actual
+            p_pct = (p_net_savings / p_tot_planned * 100.0) if p_tot_planned > 0 else 0.0
+
+            with st.expander(f"👤 **{p_name}** — {len(p_reuploaded)} Items Procured | Total Savings: PKR {p_net_savings:,.0f} ({p_pct:.1f}%)", expanded=False):
+                pc1, pc2, pc3, pc4 = st.columns(4)
+                pc1.metric("Items Re-Uploaded", f"{len(p_reuploaded)} / {len(p_items)}")
+                pc2.metric("Quoted Planned Cost", f"PKR {p_tot_planned:,.0f}")
+                pc3.metric("Actual Acquired Cost", f"PKR {p_tot_actual:,.0f}")
+                pc4.metric("Net Money Saved", f"PKR {p_net_savings:,.0f}", f"{p_pct:.1f}%", delta_color="normal" if p_net_savings >= 0 else "inverse")
+
+                st.markdown("##### 📁 Procurement Breakdown by Quotation & Project")
+                if p_items.empty:
+                    st.caption(f"No procurement items logged for purchaser '{p_name}' yet.")
+                else:
+                    p_items["q_key"] = p_items["quotation_number"].astype(str) + " — " + p_items["company_name"].astype(str) + " (" + p_items["project_name"].astype(str) + ")"
+                    grouped = p_items.groupby("q_key")
+                    
+                    for q_title, group_df in grouped:
+                        g_reuploaded = group_df[group_df["actual_price"] > 0] if not group_df.empty else pd.DataFrame()
+                        g_planned = g_reuploaded["price"].sum() if not g_reuploaded.empty else 0.0
+                        g_actual = g_reuploaded["actual_price"].sum() if not g_reuploaded.empty else 0.0
+                        g_savings = g_planned - g_actual
+                        
+                        st.markdown(f"**📑 {q_title}**")
+                        st.caption(f"Project Subtotal: Planned PKR {g_planned:,.0f} | Actual PKR {g_actual:,.0f} | Savings: **PKR {g_savings:,.0f}**")
+
+                        group_rows = []
+                        for _, i_row in group_df.iterrows():
+                            pl_price = _safe_float(i_row["price"])
+                            ac_price = _safe_float(i_row["actual_price"])
+                            i_sav = pl_price - ac_price if ac_price > 0 else 0.0
+                            
+                            group_rows.append({
+                                "Item Description": i_row.get("component_name", ""),
+                                "Quoted Planned Price": f"PKR {pl_price:,.0f}",
+                                "Actual City Price": f"PKR {ac_price:,.0f}" if ac_price > 0 else "🟡 Pending",
+                                "Net Savings / (Overrun)": f"PKR {i_sav:,.0f}" if ac_price > 0 else "—",
+                                "Supplier Notes": i_row.get("purchaser_notes") or "—"
+                            })
+                        st.dataframe(pd.DataFrame(group_rows), use_container_width=True)
+                        st.write("---")
+
+def render_purchase_procurement_section(role, current_user, q_df, comp_all_df):
+    st.markdown("##### 🛒 Procurement & City Market Re-Upload")
+
+    if q_df.empty:
+        st.caption("No quotation items yet. Senders must add planned items first.")
+        return
+
+    # Filter bar
+    pur_f1, pur_f2 = st.columns([2, 1])
+    p_search = pur_f1.text_input("🔍 Search Quotation for Procurement", placeholder="Search company, project, quotation # or lead generator...", key="pur_search_in")
+    all_lgs = sorted(list(set(q_df["lead_generator"].dropna().astype(str).str.strip().unique()) - {"", "None", "nan"}))
+    p_lg = pur_f2.selectbox("Filter Lead Generator", ["All Lead Generators"] + all_lgs, key="pur_lg_in")
+
+    disp_p_df = q_df.copy()
+    if p_lg != "All Lead Generators":
+        disp_p_df = disp_p_df[disp_p_df["lead_generator"] == p_lg]
+
+    if p_search.strip():
+        psq = p_search.strip().lower()
+        disp_p_df = disp_p_df[
+            disp_p_df["company_name"].astype(str).str.lower().str.contains(psq) |
+            disp_p_df["project_name"].astype(str).str.lower().str.contains(psq) |
+            disp_p_df["quotation_number"].astype(str).str.lower().str.contains(psq) |
+            disp_p_df["lead_generator"].astype(str).str.lower().str.contains(psq)
+        ]
+
+    if disp_p_df.empty:
+        st.warning("No quotation projects found matching the procurement filter.")
+        return
+
+    for idx, q_row in disp_p_df.iterrows():
+        q_id = int(q_row["id"])
+        q_amount = _safe_float(q_row["amount"])
+        q_lg_disp = str(q_row["lead_generator"]) if q_row.get("lead_generator") and str(q_row["lead_generator"]).strip() not in ("None", "nan", "") else "Unassigned"
+
+        q_comp_df = comp_all_df[comp_all_df["quotation_id"] == q_id] if not comp_all_df.empty else pd.DataFrame()
+        total_sender_planned = q_comp_df["price"].apply(_safe_float).sum() if not q_comp_df.empty else 0.0
+        total_purchaser_actual = q_comp_df["actual_price"].apply(_safe_float).sum() if not q_comp_df.empty else 0.0
+        net_savings = total_sender_planned - total_purchaser_actual
+
+        with st.expander(f"🛒 {q_row['quotation_number']} — {q_row['company_name']} ({q_row['project_name']}) | Agreed Value: PKR {q_amount:,.0f}", expanded=False):
+            pm1, pm2, pm3 = st.columns(3)
+            pm1.metric("Sender Planned Cost Sum", f"PKR {total_sender_planned:,.0f}")
+            pm2.metric("Purchaser Market Quote Sum", f"PKR {total_purchaser_actual:,.0f}" if total_purchaser_actual > 0 else "—")
+            pm3.metric("Net Procurement Savings", f"PKR {net_savings:,.0f}" if total_purchaser_actual > 0 else "—", delta_color="normal" if net_savings >= 0 else "inverse")
+
+            st.markdown("##### 🛒 Planned Items & City Market Re-Upload")
+            if q_comp_df.empty:
+                st.caption("No planned cost items submitted by quotation sender yet.")
+            else:
+                for _, comp_row in q_comp_df.iterrows():
+                    comp_id = int(comp_row["id"])
+                    planned_price = _safe_float(comp_row["price"])
+                    actual_price = _safe_float(comp_row.get("actual_price"))
+                    p_notes_val = str(comp_row.get("purchaser_notes") or "").strip()
+                    
+                    item_savings = planned_price - actual_price if actual_price > 0 else 0.0
+
+                    pur_users = get_users_by_role("Purchaser")
+                    if not pur_users:
+                        all_u_df = get_all_users_summary()
+                        pur_users = all_u_df["username"].tolist() if not all_u_df.empty else []
+                    if current_user["username"] not in pur_users:
+                        pur_users = [current_user["username"]] + pur_users
+                    
+                    curr_p_by = comp_row.get("purchased_by") or current_user["username"]
+                    p_index = pur_users.index(curr_p_by) if curr_p_by in pur_users else 0
+
+                    if actual_price > 0:
+                        rc1, rc2, rc3, rc4, rc5 = st.columns([2.5, 2, 3, 2.5, 1.2], vertical_alignment="bottom")
+                        rc1.markdown(f"📦 **{comp_row['component_name']}**\n\n<small>Sender Notes: *{comp_row.get('description') or 'None'}*</small>", unsafe_allow_html=True)
+                        rc2.markdown(f"**Sender Planned**:<br/>PKR {planned_price:,.0f}", unsafe_allow_html=True)
+                        
+                        savings_badge = f"<span style='color: #10B981; font-weight: bold;'>(-PKR {item_savings:,.0f} saved)</span>" if item_savings >= 0 else f"<span style='color: #EF4444; font-weight: bold;'>(+PKR {-item_savings:,.0f} overrun)</span>"
+                        rc3.markdown(f"**Purchaser Quote**: PKR {actual_price:,.0f} {savings_badge}<br/><small>Purchaser: **{curr_p_by}**</small>", unsafe_allow_html=True)
+                        
+                        if p_notes_val:
+                            rc4.markdown(f"<small><strong>Notes:</strong> {p_notes_val}</small>", unsafe_allow_html=True)
+                        else:
+                            rc4.write("")
+
+                        with rc5:
+                            with st.popover("✏️ Edit"):
+                                with st.form(key=f"edit_price_form_{comp_id}"):
+                                    st.markdown(f"**Edit Market Price**: {comp_row['component_name']}")
+                                    sel_purchaser = st.selectbox("Assign Purchaser / Person*", pur_users, index=p_index, key=f"sel_pur_{comp_id}")
+                                    new_act_price = st.number_input("City Re-Upload Price (PKR)*", value=actual_price, min_value=0.0, step=500.0)
+                                    new_pur_notes = st.text_input("Notes", value=p_notes_val, placeholder="e.g. Al-Madina Hardware")
+                                    
+                                    if st.form_submit_button("💾 Save Changes", type="primary"):
+                                        if new_act_price > 0:
+                                            try:
+                                                sb.table("quotation_cost_components").update({
+                                                    "actual_price": float(new_act_price),
+                                                    "purchaser_notes": new_pur_notes.strip() or None,
+                                                    "purchased_by": sel_purchaser
+                                                }).eq("id", comp_id).execute()
+                                                confirm_and_rerun(f"💾 Updated market price for '{comp_row['component_name']}' by {sel_purchaser} (PKR {new_act_price:,.0f}).", icon="🛒")
+                                            except Exception as e:
+                                                st.error(f"Cannot update market price: {e}")
+                                        else:
+                                            st.error("Please enter a valid price.")
+                    else:
+                        with st.form(key=f"inline_reupload_form_{comp_id}"):
+                            rc1, rc2, rc3, rc4, rc5, rc6 = st.columns([2, 1.5, 1.8, 1.5, 1.8, 1.1], vertical_alignment="bottom")
+                            rc1.markdown(f"📦 **{comp_row['component_name']}**\n\n<small>Sender Notes: *{comp_row.get('description') or 'None'}*</small>", unsafe_allow_html=True)
+                            rc2.markdown(f"**Sender Planned**:<br/>PKR {planned_price:,.0f}", unsafe_allow_html=True)
+
+                            in_price = rc3.number_input("City Re-Upload Price (PKR)*", value=None, min_value=0.0, step=500.0, placeholder="Enter City Price (PKR)", key=f"in_p_{comp_id}")
+                            in_pur = rc4.selectbox("Purchaser Person*", pur_users, index=p_index, key=f"in_pur_{comp_id}")
+                            in_notes = rc5.text_input("Notes", placeholder="e.g. Al-Madina Hardware", key=f"in_notes_{comp_id}")
+                            save_inline = rc6.form_submit_button("💾 Save Price", type="primary", use_container_width=True)
+
+                            if save_inline:
+                                if in_price is not None and in_price > 0:
+                                    try:
+                                        sb.table("quotation_cost_components").update({
+                                            "actual_price": float(in_price),
+                                            "purchaser_notes": in_notes.strip() or None,
+                                            "purchased_by": in_pur
+                                        }).eq("id", comp_id).execute()
+                                        confirm_and_rerun(f"💾 Saved market price for '{comp_row['component_name']}' by {in_pur} (PKR {in_price:,.0f}).", icon="🛒")
+                                    except Exception as e:
+                                        st.error(f"Cannot save price: {e}")
+                                else:
+                                    st.error("Please enter a valid price.")
 
 # ==============================================================================
-# 3. AUTHENTICATION CONTROLLER (With Mock Email Pass Reset Flow)
+# 3. AUTHENTICATION CONTROLLER (Clean Single-Frame Login Flow)
 # ==============================================================================
 
 if "user" not in st.session_state:
     st.session_state["user"] = None
-if "auth_mode" not in st.session_state:
-    st.session_state["auth_mode"] = "login"
 
 if st.session_state["user"] is None:
-    if st.session_state["auth_mode"] == "login":
-        st.markdown("<div style='margin-top: 3.5rem;'></div>", unsafe_allow_html=True)
-        st.markdown("<h2 style='text-align: center;'>Multi Tech Engineering Group Sign In</h2>", unsafe_allow_html=True)
-        col1, col2, col3 = st.columns([1, 1.5, 1])
-        with col2:
-            with st.form("login_form"):
-                u_name = st.text_input("Username")
-                p_word = st.text_input("Password", type="password")
-                if st.form_submit_button("Login", type="primary", use_container_width=True):
-                    res = sb.table("users").select("id, username, password, role, can_view_dashboard").ilike("username", u_name.strip()).execute()
-                    if res.data and res.data[0]["password"] == p_word:
-                        u = res.data[0]
-                        st.session_state["user"] = {
-                            "id": int(u["id"]), "username": u["username"],
-                            "role": u["role"], "can_view_dashboard": bool(u["can_view_dashboard"])
-                        }
-                        st.rerun()
-                    else:
-                        st.error("Invalid credentials.")
-
-            #  if st.button("Forgot Password?", use_container_width=True):
-            #      st.session_state["auth_mode"] = "forgot"
-            #      st.rerun()
-
-    elif st.session_state["auth_mode"] == "forgot":
-        st.markdown("<div style='margin-top: 3.5rem;'></div>", unsafe_allow_html=True)
-        st.markdown("<h2 style='text-align: center;'>🔑 Reset Workspace Access</h2>", unsafe_allow_html=True)
-        col1, col2, col3 = st.columns([1, 1.5, 1])
-        with col2:
-            with st.form("forgot_form"):
-                st.write("Enter your ID to simulate receiving a master verification link.")
-                reset_user = st.text_input("Username / ID Key")
-                if st.form_submit_button("Generate Reset Token Link", type="primary", use_container_width=True):
-                    res = sb.table("users").select("id").ilike("username", reset_user.strip()).execute()
-                    if res.data:
-                        mock_token = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-                        sb.table("users").update({"reset_token": mock_token}).ilike("username", reset_user.strip()).execute()
-                        st.info(f"📬 **Simulated System Email Outflow:**\n\nTo: `{reset_user.strip()}@company.com`\nSubject: Password Reset Token\n\nUse security token: **`{mock_token}`** to complete changes below.")
-                    else:
-                        st.error("Account identity not found.")
-
-            with st.form("verify_reset_form"):
-                st.write("📈 Complete Update via Token")
-                v_user = st.text_input("Confirm Username")
-                v_token = st.text_input("Security Token")
-                v_pass = st.text_input("New System Password", type="password")
-                if st.form_submit_button("Overwrite Password Security Structure", use_container_width=True):
-                    chk = sb.table("users").select("reset_token").ilike("username", v_user.strip()).execute()
-                    if chk.data and chk.data[0]["reset_token"] == v_token.strip() and v_token.strip() != "":
-                        sb.table("users").update({"password": v_pass.strip(), "reset_token": None}).ilike("username", v_user.strip()).execute()
-                        st.success("Access updated! You can log in now.")
-                    else:
-                        st.error("Token invalid or expired.")
-
-            if st.button("⬅️ Return to Main Sign In Screen", use_container_width=True):
-                st.session_state["auth_mode"] = "login"
-                st.rerun()
+    st.markdown("<div style='margin-top: 3.5rem;'></div>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center;'>Multi Tech Engineering Group Sign In</h2>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        with st.form("login_form", clear_on_submit=False):
+            u_name = st.text_input("Username", key="auth_u_name")
+            p_word = st.text_input("Password", type="password", key="auth_p_word")
+            submit_login = st.form_submit_button("Login", type="primary", use_container_width=True)
+            if submit_login:
+                if u_name.strip() and p_word.strip():
+                    try:
+                        res = sb.table("users").select("id, username, password, role, can_view_dashboard").ilike("username", u_name.strip()).execute()
+                        if res.data and res.data[0]["password"] == p_word:
+                            u = res.data[0]
+                            st.session_state["user"] = {
+                                "id": int(u["id"]), "username": u["username"],
+                                "role": u["role"], "can_view_dashboard": bool(u["can_view_dashboard"])
+                            }
+                            st.rerun()
+                            st.stop()
+                        else:
+                            st.error("Invalid credentials.")
+                    except Exception as e:
+                        st.error(f"Sign in error: {e}")
+                else:
+                    st.error("Username and password are required.")
     st.stop()
 
-current_user = st.session_state["user"]
-role = current_user["role"]
+# --- Render sidebar elements ONLY when authenticated ---
+logo_path = "logo.png" if os.path.exists("logo.png") else ("logo.jpeg" if os.path.exists("logo.jpeg") else ("logo.jpg" if os.path.exists("logo.jpg") else None))
+if logo_path:
+    st.sidebar.image(logo_path, use_container_width=True)
 
-st.sidebar.markdown(f"👤 **{current_user['username']}** ({role})")
+current_user = st.session_state["user"]
+
+# Live-refresh user record from database so role updates reflect instantly without logout
+if st.session_state.get("user"):
+    u_id = st.session_state["user"].get("id")
+    if u_id:
+        try:
+            u_res = sb.table("users").select("id, username, password, role, can_view_dashboard").eq("id", u_id).execute()
+            if u_res.data:
+                u_fresh = u_res.data[0]
+                st.session_state["user"] = {
+                    "id": int(u_fresh["id"]), "username": u_fresh["username"],
+                    "role": u_fresh["role"], "can_view_dashboard": bool(u_fresh["can_view_dashboard"])
+                }
+                current_user = st.session_state["user"]
+        except Exception:
+            pass
+
+ROLE_MAP = {
+    "lg": "Lead Generator",
+    "lead generator": "Lead Generator",
+    "acc": "Accountant",
+    "accountant": "Accountant",
+    "adv": "Advance",
+    "advance": "Advance",
+    "ceo": "CEO",
+    "pur": "Purchaser",
+    "purchase": "Purchaser",
+    "purchaser": "Purchaser"
+}
+
+# Parse & normalize roles list
+raw_roles = [r.strip() for r in str(current_user.get("role", "")).split(",")] if current_user.get("role") else []
+user_roles = []
+for r in raw_roles:
+    norm_r = ROLE_MAP.get(r.lower(), r)
+    if norm_r and norm_r not in user_roles:
+        user_roles.append(norm_r)
+
+if not user_roles:
+    user_roles = ["Advance"]
+
+if len(user_roles) > 1:
+    role_options = ["All Assigned Roles"] + user_roles if "CEO" not in user_roles else user_roles
+    if "active_role" not in st.session_state or st.session_state["active_role"] not in role_options:
+        st.session_state["active_role"] = role_options[0]
+    role = st.sidebar.selectbox("Active Role Mode", role_options, index=role_options.index(st.session_state["active_role"]), key="sidebar_role_select")
+    st.session_state["active_role"] = role
+else:
+    role = user_roles[0]
+
+st.sidebar.markdown(f"👤 **{current_user['username']}** (`{current_user['role']}`)")
+
+active_roles_to_check = user_roles if role in ("All Assigned Roles", "All Roles") else [role]
 
 menu_options = []
-if role != "Advance":
-    menu_options.append("📊 Dashboard")
-menu_options.append("🏢 Workspace")
-
-# Hide the Voucher Portal from the sidebar list entirely
-if role != "Advance":
-    menu_options.append("✍️ Voucher Portal")
-
-if role == "CEO":
-    menu_options.append("⚙️ Settings")
+if "CEO" in active_roles_to_check:
+    if current_user.get("can_view_dashboard") and "📊 Dashboard" not in menu_options:
+        menu_options.append("📊 Dashboard")
+    for item in ["📋 Quotation & Planning", "🛒 Purchase", "🎫 Voucher", "💳 Staff Advances", "🏢 Execution(Accounts)", "⚙️ Settings"]:
+        if item not in menu_options: menu_options.append(item)
+elif "Accountant" in active_roles_to_check:
+    if current_user.get("can_view_dashboard") and "📊 Dashboard" not in menu_options:
+        menu_options.append("📊 Dashboard")
+    for item in ["📋 Quotation & Planning", "🛒 Purchase", "🎫 Voucher", "💳 Staff Advances", "🏢 Execution(Accounts)"]:
+        if item not in menu_options: menu_options.append(item)
+else:
+    if "Lead Generator" in active_roles_to_check:
+        if "📋 Quotation & Planning" not in menu_options: menu_options.append("📋 Quotation & Planning")
+    if "Purchaser" in active_roles_to_check:
+        if "🛒 Purchase" not in menu_options: menu_options.append("🛒 Purchase")
+    if "Advance" in active_roles_to_check:
+        for item in ["💳 Staff Advances", "🏢 Execution(Accounts)"]:
+            if item not in menu_options: menu_options.append(item)
 
 menu = st.sidebar.radio("Navigation Workspaces", menu_options, label_visibility="collapsed")
 if st.sidebar.button("🚪 Log out", use_container_width=True):
     st.session_state["user"] = None
-    st.session_state["auth_mode"] = "login"
     st.rerun()
+    st.stop()
 
 # ==============================================================================
 # VIEW A: MAIN EXECUTIVE DATE-FILTERED DASHBOARD
@@ -382,11 +1126,12 @@ if menu == "📊 Dashboard":
         st.stop()
 
     st.title("📊 Financial Scope Overview")
-    time_filter = st.selectbox("Statistics Scope Range", ["All Time", "Last 30 Days", "This Month"])
+    time_filter = st.selectbox("Statistics Scope Range", ["All Time", "Today", "This Month", "Last 30 Days"])
 
     today = datetime.date.today()
     date_limit = None
-    if time_filter == "Last 30 Days": date_limit = today - datetime.timedelta(days=30)
+    if time_filter == "Today": date_limit = today
+    elif time_filter == "Last 30 Days": date_limit = today - datetime.timedelta(days=30)
     elif time_filter == "This Month": date_limit = today.replace(day=1)
 
     tables = fetch_all_table_data()
@@ -414,61 +1159,412 @@ if menu == "📊 Dashboard":
         total_loans = loans
 
     m1, m2, m3 = st.columns(3)
-    m1.metric("Company Balance", f"PKR{overall_bal:,.2f}" if overall_bal else "—")
-    m2.metric("Total Loans", f"PKR{total_loans:,.2f}" if total_loans else "—")
-    m3.metric("Net Profit", f"PKR{net_profit:,.2f}" if net_profit else "—")
+    m1.metric("Company Balance", f"PKR {overall_bal:,.0f}" if overall_bal else "—")
+    m2.metric("Total Loans", f"PKR {total_loans:,.0f}" if total_loans else "—")
+    m3.metric("Net Profit", f"PKR {net_profit:,.0f}" if net_profit else "—")
 
     with st.expander(f"Details ({time_filter})"):
         st.markdown(f"""
-* **Revenue Inflow (Income)**: `PKR{inc:,.2f}`
-* **Capital Infusions (Loans)**: `+ PKR{total_loans:,.2f}`
-* **Direct Clearances (Expenses)**: `- PKR{exp:,.2f}`
-* **Petty Cash Advanced**: `- PKR{alloc_adv:,.2f}`
+* **Revenue Inflow (Income)**: `PKR {inc:,.0f}`
+* **Capital Infusions (Loans)**: `+ PKR {total_loans:,.0f}`
+* **Direct Clearances (Expenses)**: `- PKR {exp:,.0f}`
+* **Petty Cash Advanced**: `- PKR {alloc_adv:,.0f}`
 ---
-* **Total Liquid Asset Balance**: **`PKR{overall_bal:,.2f}`**
+* **Total Liquid Asset Balance**: **`PKR {overall_bal:,.0f}`**
 """)
+
+    st.markdown("---")
+    st.markdown(f"### 📊 Quotation Conversion & Performance Metrics ({time_filter})")
+    q_df = tables.get("quotations", pd.DataFrame()).copy()
+    
+    if date_limit and not q_df.empty:
+        q_df["created_at_dt"] = pd.to_datetime(q_df["created_at"]).dt.date
+        q_df = q_df[q_df["created_at_dt"] >= date_limit]
+
+    total_q = len(q_df) if not q_df.empty else 0
+    total_q_val = q_df["amount"].apply(_safe_float).sum() if not q_df.empty else 0.0
+
+    succ_q_df = q_df[q_df["status"] == "Successful"] if not q_df.empty else pd.DataFrame()
+    succ_count = len(succ_q_df)
+    succ_val = succ_q_df["amount"].apply(_safe_float).sum() if not succ_q_df.empty else 0.0
+
+    sent_q_df = q_df[q_df["status"] == "Sent"] if not q_df.empty else pd.DataFrame()
+    sent_count = len(sent_q_df)
+    sent_val = sent_q_df["amount"].apply(_safe_float).sum() if not sent_q_df.empty else 0.0
+
+    declined_q_df = q_df[q_df["status"] == "Declined"] if not q_df.empty else pd.DataFrame()
+    declined_count = len(declined_q_df)
+    declined_val = declined_q_df["amount"].apply(_safe_float).sum() if not declined_q_df.empty else 0.0
+
+    win_rate = (succ_count / total_q * 100) if total_q > 0 else 0.0
+    pending_rate = (sent_count / total_q * 100) if total_q > 0 else 0.0
+    declined_rate = (declined_count / total_q * 100) if total_q > 0 else 0.0
+
+    qc1, qc2, qc3, qc4 = st.columns(4)
+    qc1.metric("Total Quotations Sent", f"PKR {total_q_val:,.0f}", f"{total_q} Total Records", delta_color="off")
+    qc2.metric("Successful (Approved)", f"PKR {succ_val:,.0f}", f"{succ_count} Records ({win_rate:.1f}% Win Rate)", delta_color="normal")
+    qc3.metric("Only Sent (Pending)", f"PKR {sent_val:,.0f}", f"{sent_count} Records ({pending_rate:.1f}% Pending)", delta_color="off")
+    qc4.metric("Declined", f"PKR {declined_val:,.0f}", f"{declined_count} Records ({declined_rate:.1f}% Declined)", delta_color="inverse")
+
+    st.markdown("##### 📁 Quotation Record Breakdown by Status & Lead Generator")
+    q_dash_tabs = st.tabs([
+        f"🟢 Approved ({succ_count})", 
+        f"🟡 Pending ({sent_count})", 
+        f"🔴 Declined ({declined_count})",
+        "👤 Lead Generator Analytics"
+    ])
+
+    with q_dash_tabs[0]:
+        if succ_q_df.empty:
+            st.caption("No approved/successful quotations recorded for this period.")
+        else:
+            disp_succ = succ_q_df[["quotation_number", "company_name", "project_name", "lead_generator", "amount", "created_at"]].copy()
+            disp_succ.columns = ["Quotation #", "Company Name", "Project Name", "Lead Generator", "Amount (PKR)", "Date Sent"]
+            disp_succ["Amount (PKR)"] = disp_succ["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+            st.dataframe(disp_succ, use_container_width=True)
+
+    with q_dash_tabs[1]:
+        if sent_q_df.empty:
+            st.caption("No pending/sent quotations recorded for this period.")
+        else:
+            disp_sent = sent_q_df[["quotation_number", "company_name", "project_name", "lead_generator", "amount", "created_at"]].copy()
+            disp_sent.columns = ["Quotation #", "Company Name", "Project Name", "Lead Generator", "Amount (PKR)", "Date Sent"]
+            disp_sent["Amount (PKR)"] = disp_sent["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+            st.dataframe(disp_sent, use_container_width=True)
+
+    with q_dash_tabs[2]:
+        if declined_q_df.empty:
+            st.caption("No declined quotations recorded for this period.")
+        else:
+            disp_dec = declined_q_df[["quotation_number", "company_name", "project_name", "lead_generator", "amount", "created_at"]].copy()
+            disp_dec.columns = ["Quotation #", "Company Name", "Project Name", "Lead Generator", "Amount (PKR)", "Date Sent"]
+            disp_dec["Amount (PKR)"] = disp_dec["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+            st.dataframe(disp_dec, use_container_width=True)
+
+    with q_dash_tabs[3]:
+        if q_df.empty:
+            st.caption("No quotation records found for lead generator analytics.")
+        else:
+            lg_summary_rows = []
+            all_lgs = sorted([l for l in q_df["lead_generator"].dropna().unique() if str(l).strip() not in ("nan", "None", "")])
+            if not all_lgs:
+                all_lgs = ["Unassigned"]
+
+            for lg_user in all_lgs:
+                lg_q = q_df[q_df["lead_generator"] == lg_user] if lg_user != "Unassigned" else q_df[q_df["lead_generator"].isna() | (q_df["lead_generator"] == "")]
+                lg_tot = len(lg_q)
+                lg_tot_val = lg_q["amount"].apply(_safe_float).sum()
+                
+                lg_succ = len(lg_q[lg_q["status"] == "Successful"])
+                lg_succ_val = lg_q[lg_q["status"] == "Successful"]["amount"].apply(_safe_float).sum()
+                
+                lg_sent = len(lg_q[lg_q["status"] == "Sent"])
+                lg_sent_val = lg_q[lg_q["status"] == "Sent"]["amount"].apply(_safe_float).sum()
+
+                lg_dec = len(lg_q[lg_q["status"] == "Declined"])
+                lg_dec_val = lg_q[lg_q["status"] == "Declined"]["amount"].apply(_safe_float).sum()
+
+                lg_win_rate = (lg_succ / lg_tot * 100.0) if lg_tot > 0 else 0.0
+
+                lg_summary_rows.append({
+                    "Lead Generator": lg_user,
+                    "Total Quotations": lg_tot,
+                    "Total Quoted Value": f"PKR {lg_tot_val:,.0f}",
+                    "Approved Records": f"{lg_succ} (PKR {lg_succ_val:,.0f})",
+                    "Pending Records": f"{lg_sent} (PKR {lg_sent_val:,.0f})",
+                    "Declined Records": f"{lg_dec} (PKR {lg_dec_val:,.0f})",
+                    "Win Rate %": f"{lg_win_rate:.1f}%"
+                })
+
+            st.dataframe(pd.DataFrame(lg_summary_rows), use_container_width=True)
+
+    st.markdown("---")
+    st.markdown(f"### 🛒 Overall Purchase & Procurement Overview ({time_filter})")
+    comp_all_df = tables.get("components", pd.DataFrame()).copy()
+    q_all_df = tables.get("quotations", pd.DataFrame()).copy()
+
+    merged_comp = comp_all_df.copy() if not comp_all_df.empty else pd.DataFrame()
+    if not merged_comp.empty and not q_all_df.empty:
+        q_sub = q_all_df[["id", "quotation_number", "company_name", "project_name", "created_at"]]
+        merged_comp = merged_comp.merge(q_sub, left_on="quotation_id", right_on="id", how="left", suffixes=("", "_q"))
+
+    if date_limit and not merged_comp.empty and "created_at" in merged_comp:
+        merged_comp["created_at_dt"] = pd.to_datetime(merged_comp["created_at"]).dt.date
+        merged_comp = merged_comp[merged_comp["created_at_dt"] >= date_limit]
+
+    if merged_comp.empty:
+        st.caption("No procurement or purchase cost items logged for this period.")
+    else:
+        merged_comp["actual_price"] = merged_comp["actual_price"].apply(_safe_float)
+        merged_comp["price"] = merged_comp["price"].apply(_safe_float)
+        merged_comp["savings"] = merged_comp["price"] - merged_comp["actual_price"]
+        merged_comp["purchased_by"] = merged_comp["purchased_by"].fillna("Unassigned")
+
+        p_reuploaded = merged_comp[merged_comp["actual_price"] > 0]
+        p_pending = merged_comp[merged_comp["actual_price"] == 0]
+
+        d_tot_items = len(merged_comp)
+        d_reup_items = len(p_reuploaded)
+        d_planned_sum = p_reuploaded["price"].sum() if not p_reuploaded.empty else 0.0
+        d_actual_sum = p_reuploaded["actual_price"].sum() if not p_reuploaded.empty else 0.0
+        d_net_savings = d_planned_sum - d_actual_sum
+        d_savings_pct = (d_net_savings / d_planned_sum * 100.0) if d_planned_sum > 0 else 0.0
+
+        pk1, pk2, pk3, pk4 = st.columns(4)
+        pk1.metric("Items Procured / Tracked", f"{d_reup_items} / {d_tot_items}", f"{len(p_pending)} Pending", delta_color="off")
+        pk2.metric("Initially Planned Budget", f"PKR {d_planned_sum:,.0f}")
+        pk3.metric("Purchase Amount", f"PKR {d_actual_sum:,.0f}")
+        pk4.metric("Total Procurement Savings", f"PKR {d_net_savings:,.0f}", f"{d_savings_pct:.1f}% Savings", delta_color="normal" if d_net_savings >= 0 else "inverse")
+
+        st.markdown("##### 📁 Procurement Breakdown & Purchaser Savings Summary")
+        p_dash_tabs = st.tabs([
+            f"🛍️ Purchaser Performance ({len(merged_comp['purchased_by'].unique())})",
+            f"📦 Procured Items ({d_reup_items})",
+            f"🟡 Pending Re-Uploads ({len(p_pending)})"
+        ])
+
+        with p_dash_tabs[0]:
+            all_dash_purchasers = sorted(list(set([str(p).strip() for p in merged_comp["purchased_by"].unique() if p and str(p).strip() not in ("nan", "None", "", "Unassigned")])))
+            if not all_dash_purchasers:
+                st.caption("No purchaser assignments recorded for this period.")
+            else:
+                pur_summary_rows = []
+                for p_user in all_dash_purchasers:
+                    p_user_items = merged_comp[merged_comp["purchased_by"] == p_user]
+                    p_user_reup = p_user_items[p_user_items["actual_price"] > 0]
+                    p_u_planned = p_user_reup["price"].sum()
+                    p_u_actual = p_user_reup["actual_price"].sum()
+                    p_u_savings = p_u_planned - p_u_actual
+                    p_u_pct = (p_u_savings / p_u_planned * 100.0) if p_u_planned > 0 else 0.0
+
+                    pur_summary_rows.append({
+                        "Purchaser Person": p_user,
+                        "Items Procured": f"{len(p_user_reup)} / {len(p_user_items)}",
+                        "Initially Planned Budget": f"PKR {p_u_planned:,.0f}",
+                        "Purchase Amount": f"PKR {p_u_actual:,.0f}",
+                        "Net Money Saved": f"PKR {p_u_savings:,.0f}",
+                        "Savings %": f"{p_u_pct:.1f}%"
+                    })
+                st.dataframe(pd.DataFrame(pur_summary_rows), use_container_width=True)
+
+        with p_dash_tabs[1]:
+            if p_reuploaded.empty:
+                st.caption("No items with market price re-uploads found.")
+            else:
+                disp_reup = p_reuploaded[["quotation_number", "company_name", "project_name", "component_name", "price", "actual_price", "savings", "purchased_by", "purchaser_notes"]].copy()
+                disp_reup.columns = ["Quotation #", "Company Name", "Project Name", "Item Description", "Planned Budget (PKR)", "Purchase Amount (PKR)", "Savings (PKR)", "Purchaser", "Notes"]
+                disp_reup["Planned Budget (PKR)"] = disp_reup["Planned Budget (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+                disp_reup["Purchase Amount (PKR)"] = disp_reup["Purchase Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+                disp_reup["Savings (PKR)"] = disp_reup["Savings (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+                disp_reup["Notes"] = disp_reup["Notes"].fillna("—")
+                st.dataframe(disp_reup, use_container_width=True)
+
+        with p_dash_tabs[2]:
+            if p_pending.empty:
+                st.caption("All procurement items have been re-uploaded! No pending items.")
+            else:
+                disp_pend = p_pending[["quotation_number", "company_name", "project_name", "component_name", "price", "description"]].copy()
+                disp_pend.columns = ["Quotation #", "Company Name", "Project Name", "Item Description", "Planned Budget (PKR)", "Sender Notes"]
+                disp_pend["Planned Budget (PKR)"] = disp_pend["Planned Budget (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
+                disp_pend["Sender Notes"] = disp_pend["Sender Notes"].fillna("—")
+                st.dataframe(disp_pend, use_container_width=True)
+
+# ==============================================================================
+# VIEW G: STAFF ADVANCES REPORTING SCOPE
+# ==============================================================================
+
+elif menu == "💳 Staff Advances":
+    if role not in ("CEO", "Accountant", "Advance"):
+        st.error("🔒 Unauthorized: Access restricted.")
+        st.stop()
+        
+    st.title("💳 Staff Advances Ledger Report")
+    
+    tables = fetch_all_table_data()
+    adv_all = tables["advances"]
+    sp_all = tables["spends"]
+    proj_all = tables["projects"]
+    comp_all = tables["companies"]
+    
+    if role == "Advance":
+        target_workers = [current_user["username"]]
+        st.caption("👁️ Personal Advance Balance and Spendings Breakdown")
+    else:
+        # CEO or Accountant can see all workers
+        advance_users = get_users_by_role("Advance")
+        active_advances_users = list(adv_all["person_name"].unique()) if not adv_all.empty else []
+        target_workers = sorted(list(set(advance_users + active_advances_users)))
+        st.caption("📋 Administrative Summary of all Field Worker Cash Allocations")
+        
+    # Pre-calculate totals for the selected target_workers
+    total_allocated = 0.0
+    total_spent = 0.0
+    
+    worker_data = []
+    
+    for worker in target_workers:
+        # Get allocations
+        w_adv = adv_all[adv_all["person_name"] == worker] if not adv_all.empty else pd.DataFrame()
+        w_alloc = w_adv["allocated_amount"].apply(_safe_float).sum() if not w_adv.empty else 0.0
+        
+        # Get spends
+        w_spend = 0.0
+        w_adv_breakdown = []
+        
+        if not w_adv.empty:
+            adv_ids = w_adv["id"].tolist()
+            w_sp_df = sp_all[sp_all["advance_id"].isin(adv_ids)] if not sp_all.empty else pd.DataFrame()
+            w_spend = w_sp_df["amount_spent"].apply(_safe_float).sum() if not w_sp_df.empty else 0.0
+            
+            # Project by project breakdown for this worker
+            for _, adv in w_adv.iterrows():
+                adv_id = int(adv["id"])
+                proj_id = int(adv["project_id"])
+                
+                # Fetch project name
+                proj_row = proj_all[proj_all["id"] == proj_id] if not proj_all.empty else pd.DataFrame()
+                proj_name = proj_row.iloc[0]["name"] if not proj_row.empty else f"Project ID: {proj_id}"
+                
+                # Fetch company name if possible
+                comp_name = ""
+                if not proj_row.empty:
+                    comp_id = proj_row.iloc[0]["company_id"]
+                    comp_row = comp_all[comp_all["id"] == comp_id] if not comp_all.empty else pd.DataFrame()
+                    comp_name = comp_row.iloc[0]["name"] if not comp_row.empty else ""
+                
+                adv_alloc_amt = _safe_float(adv["allocated_amount"])
+                adv_spends = sp_all[sp_all["advance_id"] == adv_id] if not sp_all.empty else pd.DataFrame()
+                adv_spent_amt = adv_spends["amount_spent"].apply(_safe_float).sum() if not adv_spends.empty else 0.0
+                adv_bal = adv_alloc_amt - adv_spent_amt
+                
+                # Spent details list
+                spent_items = []
+                if not adv_spends.empty:
+                    for _, sp in adv_spends.sort_values("id", ascending=False).iterrows():
+                        spent_items.append({
+                            "item": sp["item_name"],
+                            "amount": _safe_float(sp["amount_spent"]),
+                            "date": sp["created_at"]
+                        })
+                
+                w_adv_breakdown.append({
+                    "project_name": proj_name,
+                    "company_name": comp_name,
+                    "allocated": adv_alloc_amt,
+                    "spent": adv_spent_amt,
+                    "balance": adv_bal,
+                    "spends": spent_items
+                })
+        
+        w_bal = w_alloc - w_spend
+        total_allocated += w_alloc
+        total_spent += w_spend
+        
+        worker_data.append({
+            "name": worker,
+            "allocated": w_alloc,
+            "spent": w_spend,
+            "balance": w_bal,
+            "breakdown": w_adv_breakdown
+        })
+        
+    total_balance = total_allocated - total_spent
+    
+    # Display top summary metrics
+    mc1, mc2, mc3 = st.columns(3)
+    mc1.metric("Total Cash Allocated", f"PKR {total_allocated:,.0f}")
+    mc2.metric("Total Spent", f"PKR {total_spent:,.0f}")
+    mc3.metric("Remaining Balance", f"PKR {total_balance:,.0f}")
+    st.write("---")
+    
+    if not worker_data:
+        st.info("No staff advance records found in the database.")
+    else:
+        for wd in worker_data:
+            with st.container(border=True):
+                # Header with name and totals
+                c1, c2 = st.columns([3.5, 2.5])
+                c1.markdown(f"### 👤 **{wd['name']}**")
+                
+                c2.markdown(
+                    f"<p style='font-size:0.95rem; margin:0; text-align:right; color:#475569;'>"
+                    f"Allocated: <span style='font-weight:600;'>PKR {wd['allocated']:,.0f}</span> | "
+                    f"Spent: <span style='color:#ef4444; font-weight:600;'>PKR {wd['spent']:,.0f}</span> | "
+                    f"Bal: <span style='color:#10B981; font-weight:600;'>PKR {wd['balance']:,.0f}</span>"
+                    f"</p>", 
+                    unsafe_allow_html=True
+                )
+                
+                # Expander for project details
+                if wd["breakdown"]:
+                    with st.expander(f"📁 View Project-wise Allocation Details for {wd['name']}", expanded=True if len(target_workers) == 1 else False):
+                        for p_idx, b in enumerate(wd["breakdown"]):
+                            st.markdown(f"##### 📁 **{b['project_name']}**" + (f" *({b['company_name']})*" if b['company_name'] else ""))
+                            
+                            pc1, pc2, pc3 = st.columns(3)
+                            pc1.markdown(f"<small>Allocated:</small><br/>**PKR {b['allocated']:,.0f}**", unsafe_allow_html=True)
+                            pc2.markdown(f"<small>Spent:</small><br/>**PKR {b['spent']:,.0f}**", unsafe_allow_html=True)
+                            pc3.markdown(f"<small>Remaining:</small><br/>**PKR {b['balance']:,.0f}**", unsafe_allow_html=True)
+                            
+                            # Spent concept list for this project
+                            if b["spends"]:
+                                st.markdown("<small>Expense Ledgers Logged:</small>", unsafe_allow_html=True)
+                                spend_rows = []
+                                for item in b["spends"]:
+                                    spend_rows.append(f"• **PKR {item['amount']:,.0f}** — *{item['item']}* <span style='color:#64748b; font-size:0.75rem;'>({item['date']})</span>")
+                                st.markdown("<br/>".join(spend_rows), unsafe_allow_html=True)
+                            else:
+                                st.markdown("<small style='color:#94a3b8;'>No expenditures logged for this project allocation yet.</small>", unsafe_allow_html=True)
+                            
+                            if p_idx < len(wd["breakdown"]) - 1:
+                                st.write("---")
+                else:
+                    st.caption("No project allocations made to this worker yet.")
 
 # ==============================================================================
 # VIEW B: COMPANY & PROJECT WORKSPACE (INTEGRATED SINGLE-CARD PERFECTION)
 # ==============================================================================
 
-elif menu == "🏢 Workspace":
-    st.title("🏢 Business Portfolio Workspace")
-    is_read_only = (role == "Advance")
+elif menu == "🏢 Execution(Accounts)":
+    if role == "Lead Generator":
+        st.error("🔒 Unauthorized: Access restricted.")
+        st.stop()
+    st.title("🏢 Execution(Accounts) Workspace")
+    is_read_only = role in ("Advance", "CEO")
 
-    st.markdown("""
-    <style>
-    div[data-testid="stMetricValue"] { font-size: 1.15rem !important; font-weight: 700 !important; }
-    div[data-testid="stMetricLabel"] { font-size: 0.8rem !important; }
-    .compact-header { font-size: 1.2rem !important; font-weight: bold !important; margin: 0px !important; }
-    .project-title { font-size: 1.1rem !important; font-weight: bold !important; color: #3b82f6; }
-    </style>
-    """, unsafe_allow_html=True)
-
-    if is_read_only:
-        st.info("👁️ Read-Only Mode: View access granted. Log modifications are restricted.")
+    if role == "CEO":
+        st.caption("👁️ Executive Observer Mode")
+    elif role == "Advance":
+        st.caption("👁️ Read-Only Mode")
 
     companies_df = get_all_companies()
     tables = fetch_all_table_data()
-
-    st.subheader("🏢 Corporate Portfolios")
+    _all_balances, _zero_bal = _compute_all_balances(tables)
 
     for idx, r in companies_df.iterrows():
         c_id = int(r["id"])
-        c_bal = get_company_balance(c_id)
+        company_name = r["name"]
+        c_bal = get_company_balance(c_id, _precomputed=_all_balances, _zero=_zero_bal)
 
         with st.container(border=True):
-            col_name, col_bal, col_prof, col_loan, col_edit, col_btn = st.columns([1.8, 2.2, 2.2, 2.2, 1, 1.3])
-            col_name.markdown(f"<p class='compact-header'>{r['name']}</p>", unsafe_allow_html=True)
-            col_bal.metric("Balance", f"PKR {c_bal['balance']:,.2f}")
-            col_prof.metric("Net Profit", f"PKR {c_bal['profit']:,.2f}")
-            col_loan.metric("Active Loans", f"PKR {c_bal['loans']:,.2f}")
+            col_name, col_bal, col_prof, col_loan, col_edit, col_btn = st.columns([1.8, 2.2, 2.2, 2.2, 1.6, 1.3])
+            col_name.markdown(f"**{r['name']}**")
+            col_bal.metric("Balance", f"PKR {c_bal['balance']:,.0f}")
+            col_prof.metric("Net Profit", f"PKR {c_bal['profit']:,.0f}")
+            col_loan.metric("Active Loans", f"PKR {c_bal['loans']:,.0f}")
 
             is_editing_co = st.session_state.get("edit_co_id") == c_id
             if not is_read_only:
-                if col_edit.button("✏️", key=f"edit_co_btn_{c_id}", use_container_width=True, help="Edit company details"):
+                edit_c1, edit_c2 = col_edit.columns(2)
+                if edit_c1.button("✏️", key=f"edit_co_btn_{c_id}", use_container_width=True, help="Edit company details"):
                     st.session_state["edit_co_id"] = None if is_editing_co else c_id
                     st.rerun()
+                if edit_c2.button("🗑️", key=f"del_co_btn_{c_id}", use_container_width=True, help="Delete company entity"):
+                    try:
+                        sb.table("companies").delete().eq("id", c_id).execute()
+                        confirm_warn_and_rerun(f"Deleted company '{r['name']}'.", icon="🗑️")
+                    except Exception as e:
+                        st.error(f"Cannot delete company: {e}")
 
             is_active = st.session_state.get("sel_co_id") == c_id
             btn_label = "🔒 Close" if is_active else "📂 Open"
@@ -484,7 +1580,7 @@ elif menu == "🏢 Workspace":
                     ec1, ec2 = st.columns(2)
                     edit_name = ec1.text_input("Company Name", value=r["name"])
                     edit_site = ec2.text_input("Location / Site", value=r["site"] if not pd.isna(r["site"]) else "")
-                    edit_desc = st.text_area("Description", value=r["description"] if not pd.isna(r["description"]) else "", height=68)
+                    edit_desc = st.text_area("Description", value=r["description"] if not pd.isna(r["description"]) else "", height=45)
                     sc1, sc2 = st.columns(2)
                     save_co = sc1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
                     cancel_co = sc2.form_submit_button("✖️ Cancel", use_container_width=True)
@@ -508,35 +1604,51 @@ elif menu == "🏢 Workspace":
 
             if is_active:
                 st.write("---")
-                st.markdown(f"### 📁 Active Projects Node Panel — {r['name']}")
 
                 projects_df = get_projects_full(c_id)
 
                 if projects_df.empty:
                     st.caption("No registered projects found under this entity structure.")
+                    if not is_read_only:
+                        if st.button("➕ Create New Project Node", key=f"add_p_empty_{c_id}", type="primary"):
+                            st.session_state[f"show_add_proj_{c_id}"] = True
+                            st.rerun()
                 else:
                     p_labels = [p["name"] for _, p in projects_df.iterrows()]
                     p_map = {p["name"]: int(p["id"]) for _, p in projects_df.iterrows()}
 
-                    p_sel_col, p_edit_col = st.columns([5, 1])
-                    chosen_p_label = p_sel_col.selectbox("📂 Switch Active Project Target Tab:", p_labels, key=f"p_pop_select_{c_id}")
+                    p_lbl_col, p_sel_col, p_edit_col = st.columns([1.2, 4.2, 1.8], vertical_alignment="center")
+                    p_lbl_col.markdown("<h3 style='margin:0;'>Projects</h3>", unsafe_allow_html=True)
+                    chosen_p_label = p_sel_col.selectbox("Projects", p_labels, key=f"p_pop_select_{c_id}", label_visibility="collapsed")
                     pid = p_map[chosen_p_label]
 
                     active_project_row = projects_df[projects_df["id"] == pid].iloc[0]
                     p_description_content = active_project_row["description"]
 
                     is_editing_proj = st.session_state.get("edit_proj_id") == pid
+                    is_adding_proj = st.session_state.get(f"show_add_proj_{c_id}", False)
                     if not is_read_only:
-                        p_edit_col.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-                        if p_edit_col.button("✏️ Edit", key=f"edit_proj_btn_{pid}", use_container_width=True):
-                            st.session_state["edit_proj_id"] = None if is_editing_proj else pid
+                        pe_col1, pe_col2, pe_col3 = p_edit_col.columns(3)
+                        if pe_col1.button("➕", key=f"add_proj_btn_{c_id}", use_container_width=True, help="Create New Project"):
+                            st.session_state[f"show_add_proj_{c_id}"] = not is_adding_proj
+                            st.session_state["edit_proj_id"] = None
                             st.rerun()
+                        if pe_col2.button("✏️", key=f"edit_proj_btn_{pid}", use_container_width=True, help="Edit Project"):
+                            st.session_state["edit_proj_id"] = None if is_editing_proj else pid
+                            st.session_state[f"show_add_proj_{c_id}"] = False
+                            st.rerun()
+                        if pe_col3.button("🗑️", key=f"del_proj_btn_{pid}", use_container_width=True, help="Delete Project"):
+                            try:
+                                sb.table("projects").delete().eq("id", pid).execute()
+                                confirm_warn_and_rerun(f"Deleted project '{active_project_row['name']}'.", icon="🗑️")
+                            except Exception as e:
+                                st.error(f"Cannot delete project: {e}")
 
                     if is_editing_proj and not is_read_only:
                         with st.form(f"edit_proj_form_{pid}"):
                             st.markdown("**✏️ Edit Project Details**")
                             edit_p_name = st.text_input("Project Title", value=active_project_row["name"])
-                            edit_p_desc = st.text_area("Project Description / Scope Notes", value=p_description_content if not pd.isna(p_description_content) else "", height=68)
+                            edit_p_desc = st.text_area("Project Description / Scope Notes", value=p_description_content if not pd.isna(p_description_content) else "", height=45)
                             epc1, epc2 = st.columns(2)
                             save_proj = epc1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
                             cancel_proj = epc2.form_submit_button("✖️ Cancel", use_container_width=True)
@@ -557,15 +1669,45 @@ elif menu == "🏢 Workspace":
                                 st.session_state["edit_proj_id"] = None
                                 st.rerun()
 
-                    p_bal = get_project_balance(pid)
+                    is_adding_proj = st.session_state.get(f"show_add_proj_{c_id}", False)
+                    if is_adding_proj and not is_read_only:
+                        with st.form(f"add_p_form_{c_id}", clear_on_submit=True):
+                            st.markdown("**➕ Add New Project under this Company**")
+                            p_name = st.text_input("New Project Title*", key=f"new_p_name_{c_id}")
+                            p_desc = st.text_area("Project Description / Scope Notes (Optional)", height=45, key=f"new_p_desc_{c_id}")
+                            ap1, ap2 = st.columns(2)
+                            save_new_p = ap1.form_submit_button("➕ Create Project Node", type="primary", use_container_width=True)
+                            cancel_new_p = ap2.form_submit_button("✖️ Cancel", use_container_width=True)
+                            if save_new_p:
+                                if p_name.strip():
+                                    try:
+                                        user_desc = p_desc.strip() if p_desc else ""
+                                        full_p_desc = f"{user_desc} {EXEC_TAG}".strip()
+                                        sb.table("projects").insert({
+                                            "company_id": c_id, "name": p_name.strip(),
+                                            "description": full_p_desc
+                                        }).execute()
+                                        st.session_state[f"show_add_proj_{c_id}"] = False
+                                        confirm_and_rerun(f"📁 Project '{p_name.strip()}' created successfully.", icon="✅")
+                                    except Exception as e:
+                                        st.error(f"Cannot save project: {e}")
+                                else:
+                                    st.error("Project title cannot be empty.")
+                            if cancel_new_p:
+                                st.session_state[f"show_add_proj_{c_id}"] = False
+                                st.rerun()
+
+                    p_bal = get_project_balance(pid, _precomputed=_all_balances, _zero=_zero_bal)
 
                     m_c1, m_c2, m_c3 = st.columns(3)
-                    m_c1.metric("Project Balance", f"PKR {p_bal['balance']:,.2f}")
-                    m_c2.metric("Project Profit", f"PKR {p_bal['profit']:,.2f}")
-                    m_c3.metric("Active Project Loans", f"PKR {p_bal['loans']:,.2f}")
+                    m_c1.metric("Project Balance", f"PKR {p_bal['balance']:,.0f}")
+                    m_c2.metric("Project Profit", f"PKR {p_bal['profit']:,.0f}")
+                    m_c3.metric("Active Project Loans", f"PKR {p_bal['loans']:,.0f}")
 
                     if p_description_content and not pd.isna(p_description_content):
-                        st.caption(f"📝 **Scope Details:** {p_description_content}")
+                        clean_desc = str(p_description_content).replace(EXEC_TAG, "").strip()
+                        if clean_desc and clean_desc != "Auto-provisioned from Approved Quotation":
+                            st.caption(f"📝 **Scope Details:** {clean_desc}")
 
                     st.write("---")
 
@@ -576,6 +1718,150 @@ elif menu == "🏢 Workspace":
                     exp_data = p_ledgers[p_ledgers["type"] == "expense"][["id", "title", "amount", "cheque_number"]] if not p_ledgers.empty else pd.DataFrame()
                     inc_data = p_ledgers[p_ledgers["type"] == "income"][["id", "title", "amount", "cheque_number"]] if not p_ledgers.empty else pd.DataFrame()
                     loan_data = p_ledgers[p_ledgers["type"] == "loan"][["id", "title", "amount", "cheque_number"]] if not p_ledgers.empty else pd.DataFrame()
+
+                    # ==========================================
+                    # END-TO-END PROJECT AUDIT & SUMMARY EXPANDER
+                    # ==========================================
+                    with st.expander("📊 End-to-End Project Audit & Summary (Quotation to Execution)", expanded=False):
+                        # 1. Quotation Lookup
+                        all_q_df = tables.get("quotations", pd.DataFrame())
+                        q_match = pd.DataFrame()
+                        if not all_q_df.empty:
+                            q_match = all_q_df[
+                                (all_q_df["project_name"].astype(str).str.strip().str.lower() == str(active_project_row["name"]).strip().lower()) &
+                                (all_q_df["company_name"].astype(str).str.strip().str.lower() == str(company_name).strip().lower())
+                            ]
+                            if q_match.empty:
+                                q_match = all_q_df[all_q_df["project_name"].astype(str).str.strip().str.lower() == str(active_project_row["name"]).strip().lower()]
+
+                        q_row = q_match.iloc[0] if not q_match.empty else None
+
+                        # Quoted Justifications
+                        q_components_df = pd.DataFrame()
+                        all_qc_df = tables.get("components", pd.DataFrame())
+                        if q_row is not None and not all_qc_df.empty:
+                            q_components_df = all_qc_df[all_qc_df["quotation_id"] == int(q_row["id"])]
+
+                        planned_cost_total = float(q_components_df["price"].sum()) if not q_components_df.empty else 0.0
+                        quoted_val = float(q_row["amount"]) if q_row is not None else 0.0
+
+                        # 2. Execution Totals
+                        tot_income = float(inc_data["amount"].sum()) if not inc_data.empty else 0.0
+                        tot_expense = float(exp_data["amount"].sum()) if not exp_data.empty else 0.0
+                        tot_loan = float(loan_data["amount"].sum()) if not loan_data.empty else 0.0
+
+                        # Staff Advances & Spends
+                        adv_all = tables.get("advances", pd.DataFrame())
+                        p_adv_df = adv_all[adv_all["project_id"] == pid] if not adv_all.empty else pd.DataFrame()
+                        tot_adv_alloc = float(p_adv_df["allocated_amount"].sum()) if not p_adv_df.empty else 0.0
+
+                        spends_all = tables.get("advance_spends", pd.DataFrame())
+                        p_adv_ids = p_adv_df["id"].tolist() if not p_adv_df.empty else []
+                        p_spends_df = spends_all[spends_all["advance_id"].isin(p_adv_ids)] if (not spends_all.empty and p_adv_ids) else pd.DataFrame()
+                        tot_adv_spends = float(p_spends_df["amount_spent"].sum()) if not p_spends_df.empty else 0.0
+
+                        # Vouchers Outflow
+                        vouchers_all = tables.get("vouchers", pd.DataFrame())
+                        p_vouchers_df = vouchers_all[
+                            (vouchers_all["project_id"] == pid) & (vouchers_all["status"] == "Approved")
+                        ] if not vouchers_all.empty else pd.DataFrame()
+                        tot_vouchers = float(p_vouchers_df["amount"].sum()) if not p_vouchers_df.empty else 0.0
+
+                        tot_actual_outflow = tot_expense + tot_adv_spends + tot_vouchers
+                        net_profit = tot_income - tot_actual_outflow
+                        profit_margin = (net_profit / tot_income * 100.0) if tot_income > 0 else 0.0
+                        cost_variance = planned_cost_total - (tot_expense + tot_adv_spends)
+
+                        # Top Audit Metrics
+                        sm1, sm2, sm3, sm4 = st.columns(4)
+                        sm1.metric("Quoted Value", f"PKR {quoted_val:,.0f}", f"Ref: {q_row['quotation_number']}" if q_row is not None else "No Quotation")
+                        sm2.metric("Total Income Collected", f"PKR {tot_income:,.0f}", f"{(tot_income / quoted_val * 100):.1f}% of Quoted" if quoted_val > 0 else None)
+                        sm3.metric("Total Executed Outflows", f"PKR {tot_actual_outflow:,.0f}", help="Direct Expenses + Field Staff Spends + Approved Vouchers")
+                        sm4.metric("Net Executed Profit", f"PKR {net_profit:,.0f}", f"{profit_margin:.1f}% Margin", delta_color="normal" if net_profit >= 0 else "inverse")
+
+                        st.write("---")
+
+                        # Detailed Breakdown Tabs inside Summary
+                        sum_t1, sum_t2, sum_t3, sum_t4 = st.tabs([
+                            "📋 Quotation Baseline",
+                            "🟢 Income Receipts",
+                            "🔴 Expenses & Outflows",
+                            "💳 Staff Advances Audit"
+                        ])
+
+                        with sum_t1:
+                            if q_row is not None:
+                                st.markdown(f"**Quotation Ref**: `{q_row['quotation_number']}` | **Status**: `{q_row['status']}` | **Lead Gen**: `{q_row.get('lead_generator', 'N/A')}`")
+                                if q_row.get("notes"):
+                                    st.caption(f"**Quotation Scope Notes:** {q_row['notes']}")
+
+                                st.markdown("##### 📝 Planned Cost Justifications")
+                                if not q_components_df.empty:
+                                    st.dataframe(q_components_df[["component_name", "price", "description", "created_by"]].rename(columns={
+                                        "component_name": "Component Title",
+                                        "price": "Planned Price (PKR)",
+                                        "description": "Notes / Specs",
+                                        "created_by": "Quoted By"
+                                    }), use_container_width=True)
+                                    st.info(f"Total Quoted Planned Cost: **PKR {planned_cost_total:,.0f}** | Execution Cost Variance: **PKR {cost_variance:,.0f}** " + ("(🟢 Under Budget)" if cost_variance >= 0 else "(🔴 Over Budget)"))
+                                else:
+                                    st.caption("No itemized cost justification components logged in quotation.")
+                            else:
+                                st.caption("No matching initial quotation found for this execution project.")
+
+                        with sum_t2:
+                            st.markdown("##### 🟢 All Client Payment Inflows Received")
+                            if not inc_data.empty:
+                                st.dataframe(inc_data[["title", "amount", "cheque_number"]].rename(columns={
+                                    "title": "Payment Description",
+                                    "amount": "Amount Received (PKR)",
+                                    "cheque_number": "Cheque / Reference #"
+                                }), use_container_width=True)
+                            else:
+                                st.caption("No income receipts logged yet.")
+
+                        with sum_t3:
+                            st.markdown("##### 🔴 Complete Outflows Breakdown")
+                            sum_col1, sum_col2 = st.columns(2)
+                            with sum_col1:
+                                st.markdown("**Direct Project Expenses**")
+                                if not exp_data.empty:
+                                    st.dataframe(exp_data[["title", "amount"]].rename(columns={"title": "Expense Title", "amount": "Amount (PKR)"}), use_container_width=True)
+                                else:
+                                    st.caption("No direct expenses logged.")
+                            with sum_col2:
+                                st.markdown("**Approved Vouchers Payouts**")
+                                if not p_vouchers_df.empty:
+                                    st.dataframe(p_vouchers_df[["voucher_number", "title", "amount", "type"]].rename(columns={
+                                        "voucher_number": "Voucher #", "title": "Title", "amount": "Amount (PKR)", "type": "Department"
+                                    }), use_container_width=True)
+                                else:
+                                    st.caption("No approved vouchers linked.")
+
+                        with sum_t4:
+                            st.markdown("##### 💳 Staff Field Advances Audit")
+                            if not p_adv_df.empty:
+                                adv_summary_rows = []
+                                for _, a_row in p_adv_df.iterrows():
+                                    a_id = int(a_row["id"])
+                                    worker_spends = p_spends_df[p_spends_df["advance_id"] == a_id] if not p_spends_df.empty else pd.DataFrame()
+                                    w_spent = float(worker_spends["amount_spent"].sum()) if not worker_spends.empty else 0.0
+                                    w_alloc = float(a_row["allocated_amount"])
+                                    adv_summary_rows.append({
+                                        "Field Worker": a_row["person_name"],
+                                        "Allocated (PKR)": w_alloc,
+                                        "Spent Logged (PKR)": w_spent,
+                                        "Unspent Balance (PKR)": w_alloc - w_spent
+                                    })
+                                st.dataframe(pd.DataFrame(adv_summary_rows), use_container_width=True)
+
+                                if not p_spends_df.empty:
+                                    st.markdown("**Itemized Field Spend Receipts**")
+                                    st.dataframe(p_spends_df[["item_name", "amount_spent"]].rename(columns={
+                                        "item_name": "Item Description", "amount_spent": "Amount (PKR)"
+                                    }), use_container_width=True)
+                            else:
+                                st.caption("No staff field advances provisioned for this project.")
 
                     t1, t2, t3, t4 = st.tabs(["🔴 Expenses", "🟢 Income", "🔵 Loans", "💳 Staff Advances"])
 
@@ -590,16 +1876,23 @@ elif menu == "🏢 Workspace":
                                 cheque_val = row["cheque_number"] if "cheque_number" in row and not pd.isna(row["cheque_number"]) else ""
 
                                 with st.container(border=True):
-                                    rc1, rc2, rc3 = st.columns([4, 2.5, 1])
+                                    rc1, rc2, rc3 = st.columns([4, 2.5, 1.8])
                                     title_display = row["title"]
                                     if has_cheque and cheque_val:
                                         title_display += f"  \n🏦 Cheque #: `{cheque_val}`"
                                     rc1.markdown(f"**{title_display}**")
-                                    rc2.markdown(f"PKR {row['amount']:,.2f}")
+                                    rc2.markdown(f"PKR {row['amount']:,.0f}")
                                     if not is_read_only:
-                                        if rc3.button("✏️ Edit", key=f"btn_{edit_key}", use_container_width=True):
+                                        ed_col1, ed_col2 = rc3.columns(2)
+                                        if ed_col1.button("✏️", key=f"btn_{edit_key}", use_container_width=True, help="Edit"):
                                             st.session_state[edit_key] = not is_editing_row
                                             st.rerun()
+                                        if ed_col2.button("🗑️", key=f"del_{ledger_type}_{row_id}", use_container_width=True, help="Delete"):
+                                            try:
+                                                sb.table("ledgers").delete().eq("id", row_id).execute()
+                                                confirm_warn_and_rerun(f"Deleted {ledger_type} entry.", icon="🗑️")
+                                            except Exception as e:
+                                                st.error(f"Cannot delete record: {e}")
 
                                     if is_editing_row and not is_read_only:
                                         with st.form(f"form_{edit_key}"):
@@ -627,22 +1920,35 @@ elif menu == "🏢 Workspace":
                                                 st.session_state[edit_key] = False
                                                 st.rerun()
                         else:
-                            st.caption("No records logged.")
+                            st.caption("No record.")
 
                         if not is_read_only:
                             with st.form(f"add_entry_{ledger_type}_{pid}", clear_on_submit=True):
-                                f_col1, f_col2 = st.columns(2)
-                                new_title = f_col1.text_input("Component", key=f"t_in_{ledger_type}_{pid}")
-                                new_amount = f_col2.number_input("Value Amount (PKR)", min_value=0.0, step=500.0, key=f"a_in_{ledger_type}_{pid}")
-                                new_cheque = st.text_input("Cheque Number (Optional)", key=f"c_in_{ledger_type}_{pid}") if has_cheque else None
+                                if has_cheque:
+                                    f_col1, f_col2, f_col3, f_col4 = st.columns([2.5, 2, 2, 1.5], vertical_alignment="bottom")
+                                    new_title = f_col1.text_input("Component", key=f"t_in_{ledger_type}_{pid}")
+                                    new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}")
+                                    new_cheque = f_col3.text_input("Cheque Number (Optional)", key=f"c_in_{ledger_type}_{pid}")
+                                    submit_rec = f_col4.form_submit_button("➕ Add Record Row", use_container_width=True)
+                                else:
+                                    f_col1, f_col2, f_col3 = st.columns([3, 2, 1.5], vertical_alignment="bottom")
+                                    new_title = f_col1.text_input("Component", key=f"t_in_{ledger_type}_{pid}")
+                                    new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}")
+                                    new_cheque = None
+                                    submit_rec = f_col3.form_submit_button("➕ Add Record Row", use_container_width=True)
 
-                                if st.form_submit_button("➕ Add Record Row", use_container_width=True):
-                                    if new_title.strip() and new_amount > 0:
-                                        insert_data = {"project_id": pid, "type": ledger_type, "title": new_title.strip(), "amount": float(new_amount)}
-                                        if has_cheque:
-                                            insert_data["cheque_number"] = (new_cheque.strip() or None) if new_cheque else None
-                                        sb.table("ledgers").insert(insert_data).execute()
-                                        confirm_and_rerun(f"📈 New {ledger_type.capitalize()} record '{new_title.strip()}' added (PKR {new_amount:,.2f}).", icon="📊")
+                                if submit_rec:
+                                    if new_title.strip() and new_amount is not None and new_amount > 0:
+                                        try:
+                                            insert_data = {"project_id": pid, "type": ledger_type, "title": new_title.strip(), "amount": float(new_amount)}
+                                            if has_cheque:
+                                                insert_data["cheque_number"] = (new_cheque.strip() or None) if new_cheque else None
+                                            sb.table("ledgers").insert(insert_data).execute()
+                                            confirm_and_rerun(f"📈 New {ledger_type.capitalize()} record '{new_title.strip()}' added (PKR {new_amount:,.0f}).", icon="📊")
+                                        except Exception as e:
+                                            st.error(f"Database insertion failed: {e}")
+                                    else:
+                                        st.error("Please enter a valid component concept description and non-zero amount.")
 
                     def render_advances_tab(pid):
                         # 1. Fetch available advance personas for the selection dropdown
@@ -672,8 +1978,8 @@ elif menu == "🏢 Workspace":
                                     
                                     ac2.markdown(
                                         f"<p style='font-size:0.85rem; margin:0; text-align:right; color:#94a3b8;'>"
-                                        f"Bal: <span style='color:#10B981; font-weight:600;'>PKR {remaining:,.2f}</span> | "
-                                        f"Spend: <span style='color:#ef4444; font-weight:600;'>PKR {spent_total:,.2f}</span>"
+                                        f"Bal: <span style='color:#10B981; font-weight:600;'>PKR {remaining:,.0f}</span> | "
+                                        f"Spend: <span style='color:#ef4444; font-weight:600;'>PKR {spent_total:,.0f}</span>"
                                         f"</p>", 
                                         unsafe_allow_html=True
                                     )
@@ -682,9 +1988,16 @@ elif menu == "🏢 Workspace":
                                     edit_key = f"edit_advperson_{adv_id}"
                                     
                                     if can_manage:
-                                        if st.button("✏️ Edit Allocation Parameters", key=f"btn_{edit_key}", use_container_width=True):
+                                        ec1, ec2 = st.columns(2)
+                                        if ec1.button("✏️ Edit Allocation", key=f"btn_{edit_key}", use_container_width=True):
                                             st.session_state[edit_key] = not st.session_state.get(edit_key, False)
                                             st.rerun()
+                                        if ec2.button("🗑️ Delete Allocation", key=f"del_adv_{adv_id}", use_container_width=True):
+                                            try:
+                                                sb.table("advances").delete().eq("id", adv_id).execute()
+                                                confirm_warn_and_rerun(f"Deleted advance allocation for {adv['person_name']}.", icon="🗑️")
+                                            except Exception as e:
+                                                st.error(f"Cannot delete allocation: {e}")
 
                                     if can_manage and st.session_state.get(edit_key, False):
                                         with st.form(f"form_{edit_key}"):
@@ -713,9 +2026,54 @@ elif menu == "🏢 Workspace":
                                             st.caption("No spend items logged yet.")
                                         else:
                                             for _, sp in spends_df.iterrows():
-                                                sp_c1, sp_c2 = st.columns([4, 2])
-                                                sp_c1.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;🧾 {sp['item_name']}")
-                                                sp_c2.markdown(f"PKR {sp['amount_spent']:,.2f}")
+                                                sp_id = int(sp["id"])
+                                                sp_edit_key = f"edit_sp_{sp_id}"
+                                                is_editing_sp = st.session_state.get(sp_edit_key, False)
+                                                
+                                                with st.container(border=True):
+                                                    sp_c1, sp_c2, sp_c3 = st.columns([4, 2.5, 1.8])
+                                                    sp_c1.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;🧾 {sp['item_name']}")
+                                                    sp_c2.markdown(f"PKR {sp['amount_spent']:,.0f}")
+                                                    
+                                                    if is_owner or can_manage:
+                                                        sp_btn_col1, sp_btn_col2 = sp_c3.columns(2)
+                                                        if sp_btn_col1.button("✏️", key=f"btn_edit_sp_{sp_id}", use_container_width=True, help="Edit Spend"):
+                                                            st.session_state[sp_edit_key] = not is_editing_sp
+                                                            st.rerun()
+                                                        if sp_btn_col2.button("🗑️", key=f"btn_del_sp_{sp_id}", use_container_width=True, help="Delete Spend"):
+                                                            try:
+                                                                sb.table("advance_spends").delete().eq("id", sp_id).execute()
+                                                                confirm_warn_and_rerun("Deleted spend entry.", icon="🗑️")
+                                                            except Exception as e:
+                                                                st.error(f"Cannot delete spend: {e}")
+                                                                
+                                                    if is_editing_sp and (is_owner or can_manage):
+                                                        with st.form(f"form_edit_sp_{sp_id}"):
+                                                            edit_sp_concept = st.text_input("Concept Description", value=sp["item_name"])
+                                                            edit_sp_amt = st.number_input("Amount Spent (PKR)", min_value=0.0, step=100.0, value=float(sp["amount_spent"]))
+                                                            es_c1, es_c2 = st.columns(2)
+                                                            save_sp = es_c1.form_submit_button("💾 Save", type="primary", use_container_width=True)
+                                                            cancel_sp = es_c2.form_submit_button("✖️ Cancel", use_container_width=True)
+                                                            if save_sp:
+                                                                if edit_sp_concept.strip() and edit_sp_amt > 0:
+                                                                    new_remaining = remaining + float(sp["amount_spent"]) - edit_sp_amt
+                                                                    if new_remaining < 0:
+                                                                        st.error(f"Cannot update: exceeds remaining advance limit.")
+                                                                    else:
+                                                                        try:
+                                                                            sb.table("advance_spends").update({
+                                                                                "item_name": edit_sp_concept.strip(),
+                                                                                "amount_spent": float(edit_sp_amt)
+                                                                            }).eq("id", sp_id).execute()
+                                                                            st.session_state[sp_edit_key] = False
+                                                                            confirm_and_rerun("Updated spend entry.", icon="💾")
+                                                                        except Exception as e:
+                                                                            st.error(f"Cannot save: {e}")
+                                                                else:
+                                                                    st.error("Please enter a valid description and non-zero amount.")
+                                                            if cancel_sp:
+                                                                st.session_state[sp_edit_key] = False
+                                                                st.rerun()
 
                                         if is_owner:
                                             st.write("---")
@@ -723,24 +2081,34 @@ elif menu == "🏢 Workspace":
                                             with st.form(f"add_spend_{adv_id}", clear_on_submit=True):
                                                 sf1, sf2 = st.columns(2)
                                                 new_item = sf1.text_input("Expense Description / Concept", key=f"item_{adv_id}")
-                                                new_spend_amt = sf2.number_input("Amount Spent (PKR)", min_value=0.0, step=100.0, key=f"spend_amt_{adv_id}")
+                                                new_spend_amt = sf2.number_input("Amount Spent (PKR)", value=None, min_value=0.0, step=100.0, placeholder="Amount Spent (PKR)", key=f"spend_amt_{adv_id}")
                                                 if st.form_submit_button("➕ Submit Expense Record", use_container_width=True):
-                                                    if new_item.strip() and new_spend_amt > 0:
+                                                    if new_item.strip() and new_spend_amt is not None and new_spend_amt > 0:
                                                         if new_spend_amt > remaining + 0.001:
-                                                            st.error(f"Action Blocked: This entry exceeds your remaining balance of PKR {remaining:,.2f}.")
+                                                            st.error(f"Action Blocked: This entry exceeds your remaining balance of PKR {remaining:,.0f}.")
                                                         else:
-                                                            sb.table("advance_spends").insert({
-                                                                "advance_id": adv_id, 
-                                                                "item_name": new_item.strip(), 
-                                                                "amount_spent": float(new_spend_amt)
-                                                            }).execute()
-                                                            confirm_and_rerun(f"💵 Logged spend '{new_item.strip()}' (PKR {new_spend_amt:,.2f}).", icon="🧾")
+                                                            try:
+                                                                sb.table("advance_spends").insert({
+                                                                    "advance_id": adv_id, 
+                                                                    "item_name": new_item.strip(), 
+                                                                    "amount_spent": float(new_spend_amt)
+                                                                }).execute()
+                                                                confirm_and_rerun(f"💵 Logged spend '{new_item.strip()}' (PKR {new_spend_amt:,.0f}).", icon="🧾")
+                                                            except Exception as e:
+                                                                st.error(f"Database insertion failed: {e}")
                                                     else:
-                                                        st.error("Please enter a valid item concept description and non-zero layout amount.")
+                                                        st.error("Please enter a valid item concept description and non-zero amount.")
 
-                        # ==========================================
-                        # 3. CREATION FORM
-                        # ==========================================
+                    with t1: render_simple_form_tab(exp_data, "expense", "Expense")
+                    with t2: render_simple_form_tab(inc_data, "income", "Income")
+                    with t3: render_simple_form_tab(loan_data, "loan", "Loan")
+                    with t4:
+                        render_advances_tab(pid)
+
+                        a_all_adv = tables["advances"]
+                        adv_rows = a_all_adv[a_all_adv["project_id"] == pid].sort_values("person_name") if not a_all_adv.empty else pd.DataFrame()
+                        advance_usernames = get_users_by_role("Advance")
+
                         if role in ("CEO", "Accountant"):
                             st.write("---")
                             with st.expander("➕ Allocate New Staff Advance", expanded=adv_rows.empty):
@@ -749,70 +2117,71 @@ elif menu == "🏢 Workspace":
                                 else:
                                     with st.form(f"global_allocate_advance_{pid}", clear_on_submit=True):
                                         new_person = st.selectbox("Select Target Advance Field Worker", advance_usernames)
-                                        new_alloc = st.number_input("Initial Allocation Amount (PKR)", min_value=0.0, step=1000.0)
+                                        new_alloc = st.number_input("Initial Allocation Amount (PKR)", value=None, min_value=0.0, step=1000.0, placeholder="Allocation Amount (PKR)", key=f"new_alloc_adv_{pid}")
                                         
                                         if st.form_submit_button("➕ Provision Advanced Balance Outflow", use_container_width=True):
-                                            if new_person and new_alloc > 0:
+                                            if new_person and new_alloc is not None and new_alloc > 0:
                                                 try:
                                                     sb.table("advances").insert({
                                                         "project_id": pid,
                                                         "person_name": new_person,
                                                         "allocated_amount": float(new_alloc)
                                                     }).execute()
-                                                    confirm_and_rerun(f"💳 Advanced PKR {new_alloc:,.2f} allocated to {new_person}.", icon="✅")
+                                                    confirm_and_rerun(f"💳 Advanced PKR {new_alloc:,.0f} allocated to {new_person}.", icon="✅")
                                                 except Exception as e:
                                                     st.error(f"Database insertion failed: {e}")
                                             else:
                                                 st.error("Please assign a valid numerical allowance metric.")
-                    with t1: render_simple_form_tab(exp_data, "expense", "Expense")
-                    with t2: render_simple_form_tab(inc_data, "income", "Income")
-                    with t3: render_simple_form_tab(loan_data, "loan", "Loan")
-                    with t4: render_advances_tab(pid)
-
-                if not is_read_only:
-                    st.write("---")
-                    with st.expander("➕ Create New Project Node", expanded=False):
-                        with st.form(f"add_p_form_{c_id}", clear_on_submit=True):
-                            p_name = st.text_input("New Project Title*")
-                            p_desc = st.text_area("Project Description / Scope Notes (Optional)", height=70)
-
-                            if st.form_submit_button("Save Project Node"):
-                                if p_name.strip():
-                                    try:
-                                        sb.table("projects").insert({
-                                            "company_id": c_id, "name": p_name.strip(),
-                                            "description": p_desc.strip() if p_desc else None
-                                        }).execute()
-                                        confirm_and_rerun(f"📁 Project '{p_name.strip()}' created successfully.", icon="✅")
-                                    except Exception as e:
-                                        st.error(f"Cannot save project: {e}")
 
     if not is_read_only:
         with st.expander("➕ Add New Company Entity", expanded=False):
             with st.form("add_company_form", clear_on_submit=True):
                 row1_1, row1_2 = st.columns(2)
-                c_name = row1_1.text_input("Company Name")
-                c_site = row1_2.text_input("Location / Site")
+                c_name = row1_1.text_input("Company Name", key="new_c_name")
+                c_site = row1_2.text_input("Location / Site", key="new_c_site")
                 if st.form_submit_button("Save Company Entity", type="primary", use_container_width=True):
                     if c_name.strip():
                         try:
-                            sb.table("companies").insert({"name": c_name.strip(), "site": c_site.strip() or None}).execute()
+                            sb.table("companies").insert({"name": c_name.strip(), "site": c_site.strip() or None, "description": EXEC_TAG}).execute()
                             confirm_and_rerun(f"💼 Company '{c_name.strip()}' created successfully.", icon="🏢")
                         except Exception as e:
                             st.error(f"Cannot save company: {e}")
 
 # ==============================================================================
-# VIEW C: VOUCHER WORKFLOW
+# VIEW C: PURCHASE WORKFLOW
 # ==============================================================================
 
-elif menu == "✍️ Voucher Portal":
-
-    if role == "Advance":
-        st.error("🔒 Unauthorized: Access to the corporate voucher portal is restricted.")
+elif menu == "🛒 Purchase":
+    if role in ("Advance", "Lead Generator"):
+        st.error("🔒 Unauthorized: Access is restricted.")
         st.stop()
         
-    st.title("✍️ Corporate Voucher Portal Log")
-    
+    st.title("🛒 Purchase Expenses & Procurement Portal")
+
+    pur_tabs = st.tabs(["🛒 Procurement & City Re-Upload", "🛍️ Purchasers Analytics"])
+
+    with pur_tabs[0]:
+        tables = fetch_all_table_data()
+        q_df = tables.get("quotations", pd.DataFrame())
+        if not q_df.empty:
+            q_df = q_df[q_df["status"] == "Successful"]
+        comp_all_df = tables.get("components", pd.DataFrame())
+        render_purchase_procurement_section(role, current_user, q_df, comp_all_df)
+
+    with pur_tabs[1]:
+        render_purchaser_analytics_view(role, current_user)
+
+# ==============================================================================
+# VIEW C2: VOUCHER WORKFLOW
+# ==============================================================================
+
+elif menu == "🎫 Voucher":
+    if role in ("Advance", "Lead Generator"):
+        st.error("🔒 Unauthorized: Access is restricted.")
+        st.stop()
+        
+    st.title("🎫 Voucher Requests & Log")
+
     if "v_form_title" not in st.session_state: st.session_state["v_form_title"] = ""
     if "v_form_amount" not in st.session_state: st.session_state["v_form_amount"] = 0.0
     if "v_form_type" not in st.session_state: st.session_state["v_form_type"] = ""
@@ -857,7 +2226,7 @@ elif menu == "✍️ Voucher Portal":
 <div class="voucher-card {shading}">
 <div style="display: flex; justify-content: space-between; align-items: center;">
 <span class="voucher-title">📄 {v_row['title']}</span>
-<span style="font-weight: 800; color: {amount_color}; font-size: 1.05rem;">PKR{v_row['amount']:,.2f}</span>
+<span style="font-weight: 800; color: {amount_color}; font-size: 1.05rem;">PKR {v_row['amount']:,.0f}</span>
 </div>
 <div class="voucher-meta">
 🏛️ Portfolio: <b>{v_row['company_name']}{p_name_display}</b> |
@@ -925,56 +2294,70 @@ elif menu == "✍️ Voucher Portal":
         with t_hist:
             if h_v.empty:
                 st.caption("No historical (approved/declined) vouchers recorded yet.")
-            for idx, r in h_v.iterrows():
-                st.markdown(draw_voucher_ui_node(r, idx), unsafe_allow_html=True)
+            else:
+                H_PAGE = 25
+                h_total_pages = max(1, (len(h_v) + H_PAGE - 1) // H_PAGE)
+                h_page = st.number_input("History Page", min_value=1, max_value=h_total_pages, value=1, key="v_hist_page") if h_total_pages > 1 else 1
+                h_start = (h_page - 1) * H_PAGE
+                h_slice = h_v.iloc[h_start:h_start + H_PAGE]
+                for idx, r in h_slice.iterrows():
+                    st.markdown(draw_voucher_ui_node(r, idx), unsafe_allow_html=True)
 
     else:
-        companies_df = get_all_companies()
+        companies_df = get_all_companies(include_execution_created=False)
         if not companies_df.empty:
-            st.subheader("Submit New Voucher Request")
+            if "show_new_voucher_form" not in st.session_state:
+                st.session_state["show_new_voucher_form"] = False
+            
+            if st.button("➕ Add New Voucher Request", type="primary" if not st.session_state["show_new_voucher_form"] else "secondary", use_container_width=True):
+                st.session_state["show_new_voucher_form"] = not st.session_state["show_new_voucher_form"]
+                st.rerun()
 
-            v_filter_row = st.columns(2)
-            target_company = v_filter_row[0].selectbox("Associated Company Entity", companies_df["name"])
-            target_co_id = int(companies_df[companies_df["name"] == target_company].iloc[0]["id"])
+            if st.session_state["show_new_voucher_form"]:
+                v_filter_row = st.columns(2)
+                target_company = v_filter_row[0].selectbox("Associated Company Entity", companies_df["name"])
+                target_co_id = int(companies_df[companies_df["name"] == target_company].iloc[0]["id"])
 
-            projects_df = get_projects_names(target_co_id)
-            project_options = ["— No Specific Project Linkage —"]
-            project_id_map = {}
+                projects_df = get_projects_names(target_co_id, include_execution_created=False)
+                project_options = ["— No Specific Project Linkage —"]
+                project_id_map = {}
 
-            if not projects_df.empty:
-                for _, p_row in projects_df.iterrows():
-                    project_options.append(p_row["name"])
-                    project_id_map[p_row["name"]] = int(p_row["id"])
+                if not projects_df.empty:
+                    for _, p_row in projects_df.iterrows():
+                        project_options.append(p_row["name"])
+                        project_id_map[p_row["name"]] = int(p_row["id"])
 
-            with st.form("voucher_submission_form"):
-                target_project_label = st.selectbox("Assign Allocation Project Target*", project_options)
-                chosen_project_id = project_id_map.get(target_project_label, None)
+                with st.form("voucher_submission_form"):
+                    target_project_label = st.selectbox("Assign Allocation Project Target*", project_options)
+                    chosen_project_id = project_id_map.get(target_project_label, None)
 
-                v_row2_c1, v_row2_c2 = st.columns(2)
-                st.session_state["v_form_title"] = v_row2_c1.text_input("Voucher Title*", value=st.session_state["v_form_title"])
-                st.session_state["v_form_amount"] = v_row2_c2.number_input("Requested Payout Amount (PKR)*", min_value=0.0, step=10.0, value=float(st.session_state["v_form_amount"]))
+                    v_row2_c1, v_row2_c2 = st.columns(2)
+                    v_amt_val = float(st.session_state["v_form_amount"]) if st.session_state.get("v_form_amount") else None
+                    st.session_state["v_form_title"] = v_row2_c1.text_input("Voucher Title*", value=st.session_state["v_form_title"])
+                    st.session_state["v_form_amount"] = v_row2_c2.number_input("Requested Payout Amount (PKR)*", value=v_amt_val, min_value=0.0, step=10.0, placeholder="Requested Amount (PKR)")
 
-                v_row3_c1, v_row3_c2 = st.columns(2)
-                st.session_state["v_form_type"] = v_row3_c1.text_input("Type / Department (Optional)", value=st.session_state["v_form_type"])
-                st.session_state["v_form_remarks"] = st.text_area("Remarks (Optional)", value=st.session_state["v_form_remarks"], height=68)
-                
-                if st.form_submit_button("File Voucher Entry", type="primary", use_container_width=True):
-                    if st.session_state["v_form_title"].strip() and st.session_state["v_form_amount"] > 0:
-                        sb.table("vouchers").insert({
-                            "company_id": target_co_id, "project_id": chosen_project_id,
-                            "title": st.session_state["v_form_title"].strip(),
-                            "amount": float(st.session_state["v_form_amount"]),
-                            "remarks": st.session_state["v_form_remarks"].strip() or None,
-                            "type": st.session_state["v_form_type"].strip() or "General",
-                            "created_by": current_user["username"], "status": "Pending"
-                        }).execute()
-                        st.session_state["v_form_title"] = ""
-                        st.session_state["v_form_amount"] = 0.0
-                        st.session_state["v_form_type"] = ""
-                        st.session_state["v_form_remarks"] = ""
-                        confirm_and_rerun("📄 Voucher request submitted and lodged into the pending queue.", icon="📥")
-                    else:
-                        st.error("Please enter a Valid Title and non-zero Amount.")
+                    v_row3_c1, v_row3_c2 = st.columns(2)
+                    st.session_state["v_form_type"] = v_row3_c1.text_input("Type / Department (Optional)", value=st.session_state["v_form_type"])
+                    st.session_state["v_form_remarks"] = st.text_area("Remarks (Optional)", value=st.session_state["v_form_remarks"], height=45)
+                    
+                    if st.form_submit_button("File Voucher Entry", type="primary", use_container_width=True):
+                        if st.session_state["v_form_title"].strip() and st.session_state["v_form_amount"] is not None and st.session_state["v_form_amount"] > 0:
+                            sb.table("vouchers").insert({
+                                "company_id": target_co_id, "project_id": chosen_project_id,
+                                "title": st.session_state["v_form_title"].strip(),
+                                "amount": float(st.session_state["v_form_amount"]),
+                                "remarks": st.session_state["v_form_remarks"].strip() or None,
+                                "type": st.session_state["v_form_type"].strip() or "General",
+                                "created_by": current_user["username"], "status": "Pending"
+                            }).execute()
+                            st.session_state["v_form_title"] = ""
+                            st.session_state["v_form_amount"] = 0.0
+                            st.session_state["v_form_type"] = ""
+                            st.session_state["v_form_remarks"] = ""
+                            st.session_state["show_new_voucher_form"] = False
+                            confirm_and_rerun("📄 Voucher request submitted and lodged into the pending queue.", icon="📥")
+                        else:
+                            st.error("Please enter a Valid Title and non-zero Amount.")
 
         if role == "Accountant":
             my_v = vouchers_all if not vouchers_all.empty else pd.DataFrame()
@@ -999,7 +2382,7 @@ elif menu == "✍️ Voucher Portal":
                         ve1, ve2 = st.columns(2)
                         ve_title = ve1.text_input("Voucher Title*", value=r["title"])
                         ve_amount = ve2.number_input("Requested Payout Amount (PKR)*", min_value=0.0, step=10.0, value=float(r["amount"]))
-                        ve_remarks = st.text_area("Remarks", value=r["remarks"] if not pd.isna(r["remarks"]) else "", height=68)
+                        ve_remarks = st.text_area("Remarks", value=r["remarks"] if not pd.isna(r["remarks"]) else "", height=45)
                         vs1, vs2 = st.columns(2)
                         save_v = vs1.form_submit_button("💾 Save Changes", type="primary", use_container_width=True)
                         cancel_v = vs2.form_submit_button("✖️ Cancel", use_container_width=True)
@@ -1043,21 +2426,28 @@ elif menu == "⚙️ Settings" and role == "CEO":
     with st_tabs[0]:
         with st.form("create_acct", clear_on_submit=True):
             st.markdown("**Add New Account Credentials**")
-            acct_id = st.text_input("Username / ID")
-            acct_pw = st.text_input("Password", type="password")
-            acct_role = st.selectbox("Assign System Role", ["Accountant", "Advance", "CEO"])
+            acct_id = st.text_input("Username / ID", key="new_user_acct_id")
+            acct_pw = st.text_input("Password", type="password", key="new_user_acct_pw")
+            acct_roles = st.multiselect("Assign System Roles", ["Accountant", "Advance", "CEO", "Lead Generator", "Purchaser"], default=["Advance"])
 
             if st.form_submit_button("Create Account", type="primary"):
-                if acct_id.strip() and acct_pw.strip():
+                if not acct_roles:
+                    st.error("Please assign at least one system role.")
+                elif acct_id.strip() and acct_pw.strip():
                     try:
-                        dash_flag = True if acct_role in ["Accountant", "CEO"] else False
+                        dash_flag = any(r in ["Accountant", "CEO"] for r in acct_roles)
+                        role_str = ", ".join(acct_roles)
                         sb.table("users").insert({
                             "username": acct_id.strip(), "password": acct_pw.strip(),
-                            "role": acct_role, "can_view_dashboard": dash_flag
+                            "role": role_str, "can_view_dashboard": dash_flag
                         }).execute()
-                        confirm_and_rerun(f"👤 Account '{acct_id.strip()}' created as {acct_role}.", icon="🔑")
-                    except Exception:
-                        st.error(f"Cannot provision user: The ID key '{acct_id.strip()}' already exists.")
+                        confirm_and_rerun(f"👤 Account '{acct_id.strip()}' created as {role_str}.", icon="🔑")
+                    except Exception as e:
+                        if "users_role_check" in str(e) or "23514" in str(e):
+                            st.error("⚠️ **Database Constraint Error**: Supabase table `users` check constraint prevents multi-roles.")
+                            st.code("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;\nALTER TABLE users ALTER COLUMN role TYPE VARCHAR(255);", language="sql")
+                        else:
+                            st.error(f"Cannot provision user: {e}")
                 else:
                     st.error("Both fields are strictly mandatory.")
 
@@ -1077,26 +2467,36 @@ elif menu == "⚙️ Settings" and role == "CEO":
             # --- FORM 1: ROLE UPDATE ---
             with st.form(f"change_role_form_{target_user_id}"):
                 st.markdown("🔄 **Update Account Role Assignment**")
-                role_options = ["Accountant", "Advance", "CEO"]
+                role_options = ["Accountant", "Advance", "CEO", "Lead Generator", "Purchaser"]
 
-                try:
-                    default_role_idx = role_options.index(current_target_role)
-                except ValueError:
-                    default_role_idx = 0
+                # Parse current roles for default values
+                current_roles = [r.strip() for r in current_target_role.split(",")] if current_target_role else []
+                default_roles = [r for r in current_roles if r in role_options]
 
-                new_assigned_role = st.selectbox("Select New Workspace Role", role_options, index=default_role_idx)
+                new_assigned_roles = st.multiselect("Select New Workspace Roles", role_options, default=default_roles)
 
                 if st.form_submit_button("Save New Role Matrix"):
-                    dash_flag = True if new_assigned_role in ["Accountant", "CEO"] else False
-                    sb.table("users").update({
-                        "role": new_assigned_role, "can_view_dashboard": dash_flag
-                    }).eq("id", target_user_id).execute()
-                    confirm_and_rerun(f"🛡️ Role updated for '{selected_username}' to {new_assigned_role}.", icon="🔄")
+                    if not new_assigned_roles:
+                        st.error("Please assign at least one system role.")
+                    else:
+                        try:
+                            dash_flag = any(r in ["Accountant", "CEO"] for r in new_assigned_roles)
+                            role_str = ", ".join(new_assigned_roles)
+                            sb.table("users").update({
+                                "role": role_str, "can_view_dashboard": dash_flag
+                            }).eq("id", target_user_id).execute()
+                            confirm_and_rerun(f"🛡️ Role updated for '{selected_username}' to {role_str}.", icon="🔄")
+                        except Exception as e:
+                            if "users_role_check" in str(e) or "23514" in str(e):
+                                st.error("⚠️ **Database Constraint Error**: Supabase table `users` check constraint prevents multi-roles. Please run the SQL command below in your Supabase SQL Editor.")
+                                st.code("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;\nALTER TABLE users ALTER COLUMN role TYPE VARCHAR(255);", language="sql")
+                            else:
+                                st.error(f"Cannot update role: {e}")
             
             # --- FORM 2: PASSWORD OVERWRITE ---
             with st.form(f"change_pass_form_{target_user_id}", clear_on_submit=True):
                 st.markdown("🔒 **Administrative Security Key Reset**")
-                new_pass = st.text_input("Assign New Security Key / Password", type="password")
+                new_pass = st.text_input("Assign New Security Key / Password", type="password", key=f"reset_pw_{target_user_id}")
 
                 if st.form_submit_button("Force Overwrite Password"):
                     if new_pass.strip():
@@ -1113,3 +2513,324 @@ elif menu == "⚙️ Settings" and role == "CEO":
                     confirm_warn_and_rerun(f"🚨 User '{selected_username}' has been removed.", icon="❌")
         else:
             st.caption("No registered member accounts loaded.")
+# ==============================================================================
+# VIEW F: QUOTATIONS PORTAL (WITH LEAD GENERATOR ALLOTMENT & ANALYTICS)
+# ==============================================================================
+
+elif menu == "📋 Quotation & Planning":
+    if role == "Advance":
+        st.error("🔒 Unauthorized: Access restricted.")
+        st.stop()
+
+    st.title("📋 Quotation & Planning Portal")
+
+    if role == "CEO":
+        st.caption("👁️ Executive Observer Mode")
+
+    tables = fetch_all_table_data()
+    q_df = tables.get("quotations", pd.DataFrame())
+    
+    # Lead generator only sees their own leads
+    if role == "Lead Generator":
+        q_df = q_df[q_df["lead_generator"] == current_user["username"]] if not q_df.empty else pd.DataFrame()
+        
+    comp_all_df = tables.get("components", pd.DataFrame())
+    comp_df = get_all_companies(include_execution_created=False)
+
+    # Fetch registered system users
+    try:
+        all_users_df = get_all_users_summary()
+        registered_users = all_users_df["username"].tolist() if not all_users_df.empty else []
+    except Exception:
+        registered_users = []
+
+    existing_lgs = sorted(list(set(q_df["lead_generator"].dropna().astype(str).str.strip().unique()) - {"", "None", "nan"})) if not q_df.empty else []
+    lg_options = existing_lgs
+
+    if "q_form_company" not in st.session_state: st.session_state["q_form_company"] = ""
+    if "q_form_project" not in st.session_state: st.session_state["q_form_project"] = ""
+    if "q_form_num" not in st.session_state: st.session_state["q_form_num"] = ""
+    if "q_form_amount" not in st.session_state: st.session_state["q_form_amount"] = 0.0
+    if "q_form_notes" not in st.session_state: st.session_state["q_form_notes"] = ""
+    if "q_form_has_error" not in st.session_state: st.session_state["q_form_has_error"] = False
+
+    if role == "Lead Generator":
+        q_tabs = st.tabs(["📜 Lead Directory"])
+        q_tab1 = q_tabs[0]
+        q_tab2 = None
+    else:
+        q_tab1, q_tab2 = st.tabs(["📜 Quotation Directory", "📑 Initial Planning & Justification Tab"])
+
+    with q_tab1:
+        total_q = len(q_df) if not q_df.empty else 0
+
+        if role != "CEO":
+            has_error = st.session_state.get("q_form_has_error", False)
+            with st.expander("➕ Add New Quotation", expanded=has_error):
+                comp_mode = st.radio("Company Type", ["Existing Company", "New Company"], horizontal=True, key="q_comp_type_radio")
+                
+                with st.form("add_new_quotation_form", clear_on_submit=False):
+                    st.markdown("#### Add New Quotation")
+                    
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        company_opts = comp_df["name"].tolist() if not comp_df.empty else []
+                        if comp_mode == "Existing Company" and company_opts:
+                            q_company = st.selectbox("Company Name", company_opts)
+                        else:
+                            q_company = st.text_input("New Company Name", value=st.session_state.get("q_form_company", ""), placeholder="e.g. Apex Holdings")
+
+                        q_project = st.text_input("Quotation Project Name", value=st.session_state.get("q_form_project", ""), placeholder="e.g. Solar Power Installation Phase 1")
+                        
+                        next_num = st.session_state.get("q_form_num", "") or f"QT-2026-{(total_q + 1):03d}"
+                        q_num = st.text_input("Quotation Reference Number", value=next_num)
+
+                    with col_b:
+                        q_amt_default = float(st.session_state.get("q_form_amount", 0.0))
+                        q_amt_val = q_amt_default if q_amt_default > 0 else None
+                        q_amount = st.number_input("Quotation Amount (PKR)", value=q_amt_val, min_value=0.0, step=5000.0, format="%.0f", placeholder="Enter Quotation Amount (PKR)")
+                        q_status = st.selectbox("Quotation Status", ["Sent", "Successful", "Declined"], index=0, help="'Sent' = Only Sent/Pending, 'Successful' = Approved/Won, 'Declined' = Rejected/Lost")
+                        q_date = st.date_input("Date Sent", value=datetime.date.today())
+                        
+                        # Lead Generator Allotment
+                        if role == "Lead Generator":
+                            q_lead_gen = current_user["username"]
+                        else:
+                            st.markdown("**👤 Allot Lead Generator**")
+                            lg_select_opts = ["-- Select Lead Generator --"] + lg_options
+                            selected_lg_option = st.selectbox("Lead Generator Assignment", lg_select_opts, key="q_add_lg_selectbox")
+                            if selected_lg_option != "-- Select Lead Generator --":
+                                q_lead_gen = selected_lg_option
+                            else:
+                                q_lead_gen = ""
+
+                        q_notes = st.text_area("Scope / Remarks", value=st.session_state.get("q_form_notes", ""), placeholder="Key deliverables or conditions...", height=40)
+
+                    if st.form_submit_button("➕ Add Quotation", type="primary"):
+                        company_final = q_company.strip() if q_company else ""
+                        project_final = q_project.strip() if q_project else ""
+
+                        st.session_state["q_form_company"] = company_final
+                        st.session_state["q_form_project"] = project_final
+                        st.session_state["q_form_num"] = q_num.strip()
+                        st.session_state["q_form_amount"] = float(q_amount)
+                        st.session_state["q_form_notes"] = q_notes.strip()
+
+                        if not company_final or not project_final:
+                            st.session_state["q_form_has_error"] = True
+                            st.error("Company Name and Quotation Project Name are mandatory.")
+                        elif q_amount <= 0:
+                            st.session_state["q_form_has_error"] = True
+                            st.error("Quotation Amount must be greater than 0.")
+                        else:
+                            try:
+                                sb.table("quotations").insert({
+                                    "company_name": company_final,
+                                    "project_name": project_final,
+                                    "quotation_number": q_num.strip() or next_num,
+                                    "amount": float(q_amount),
+                                    "status": q_status,
+                                    "lead_generator": q_lead_gen.strip() or None,
+                                    "created_by": current_user["username"],
+                                    "notes": q_notes.strip() or None,
+                                    "created_at": str(q_date)
+                                }).execute()
+                                
+                                if q_status == "Successful":
+                                    auto_provision_project(company_final, project_final)
+
+                                st.session_state["q_form_company"] = ""
+                                st.session_state["q_form_project"] = ""
+                                st.session_state["q_form_num"] = ""
+                                st.session_state["q_form_amount"] = 0.0
+                                st.session_state["q_form_notes"] = ""
+                                st.session_state["q_form_has_error"] = False
+
+                                confirm_and_rerun(f"📋 Quotation '{q_num}' added successfully!", icon="✅")
+                            except Exception as e:
+                                st.session_state["q_form_has_error"] = True
+                                st.error(f"Could not save quotation: {e}\n\n*Your typed details have been safely retained above.*")
+
+        st.markdown("### Quotations")
+        
+        # Search bar alongside Lead Generator drop down
+        if role == "Lead Generator":
+            search_query = ""
+            lg_filter = current_user["username"]
+            status_filter = "All Statuses"
+            q_date_filter = "All Time"
+            custom_date_target = None
+        else:
+            filter_c1, filter_c2, filter_c3, filter_c4 = st.columns([1.5, 1.2, 1.0, 1.0])
+            with filter_c1:
+                search_query = st.text_input("🔍 Search Bar", placeholder="Search Company, Project, Ref #, or Lead Gen...", key="q_main_search_bar")
+            with filter_c2:
+                lg_filter = st.selectbox("👤 Lead Generator Scope", ["All Lead Generators"] + lg_options, key="q_lg_scope_dropdown")
+            with filter_c3:
+                status_filter = st.selectbox("Filter Status", ["All Statuses", "Sent (Only Sent)", "Successful (Approved)", "Declined"])
+            with filter_c4:
+                q_date_filter = st.selectbox("Date Scope", ["All Time", "Today", "This Month", "Last 30 Days", "Custom Date"])
+
+            custom_date_target = None
+            if q_date_filter == "Custom Date":
+                c_date_col1, _ = st.columns([2.0, 8.0])
+                custom_date_target = c_date_col1.date_input("Pinpoint Selected Date", value=datetime.date.today(), key="q_custom_date_pinpoint")
+
+        # Display how much each / selected Lead Generator has brought
+        if lg_filter != "All Lead Generators":
+            lg_df = q_df[q_df["lead_generator"] == lg_filter] if not q_df.empty else pd.DataFrame()
+            lg_count = len(lg_df)
+            lg_total_val = lg_df["amount"].apply(_safe_float).sum() if not lg_df.empty else 0.0
+            lg_won_val = lg_df[lg_df["status"] == "Successful"]["amount"].apply(_safe_float).sum() if not lg_df.empty else 0.0
+            
+            st.caption(f"👤 **{lg_filter}**: {lg_count} quotations | Total: PKR {lg_total_val:,.0f} | Won: PKR {lg_won_val:,.0f}")
+        else:
+            tot_count = len(q_df) if not q_df.empty else 0
+            tot_val = q_df["amount"].apply(_safe_float).sum() if not q_df.empty else 0.0
+            tot_won = q_df[q_df["status"] == "Successful"]["amount"].apply(_safe_float).sum() if not q_df.empty else 0.0
+            
+            st.caption(f"📈 **Total Overview across all Lead Generators**: {tot_count} Quotations lodged | Total Value: PKR {tot_val:,.0f} | Approved Value: PKR {tot_won:,.0f}")
+
+        if q_date_filter == "Custom Date" and custom_date_target:
+            date_q_df = q_df.copy() if not q_df.empty else pd.DataFrame()
+            if not date_q_df.empty:
+                date_q_df["created_at_dt"] = pd.to_datetime(date_q_df["created_at"]).dt.date
+                date_q_df = date_q_df[date_q_df["created_at_dt"] == custom_date_target]
+            day_count = len(date_q_df)
+            day_val = date_q_df["amount"].apply(_safe_float).sum() if not date_q_df.empty else 0.0
+            st.info(f"📅 **On {custom_date_target}**: {day_count} quotations were sent totaling **PKR {day_val:,.0f}**")
+
+        display_q_df = q_df.copy() if not q_df.empty else pd.DataFrame()
+        
+        if not display_q_df.empty:
+            if lg_filter != "All Lead Generators":
+                display_q_df = display_q_df[display_q_df["lead_generator"] == lg_filter]
+
+            if status_filter == "Sent (Only Sent)":
+                display_q_df = display_q_df[display_q_df["status"] == "Sent"]
+            elif status_filter == "Successful (Approved)":
+                display_q_df = display_q_df[display_q_df["status"] == "Successful"]
+            elif status_filter == "Declined":
+                display_q_df = display_q_df[display_q_df["status"] == "Declined"]
+
+            if q_date_filter != "All Time":
+                display_q_df["created_at_dt"] = pd.to_datetime(display_q_df["created_at"]).dt.date
+                if q_date_filter == "Custom Date":
+                    display_q_df = display_q_df[display_q_df["created_at_dt"] == custom_date_target]
+                else:
+                    q_today = datetime.date.today()
+                    if q_date_filter == "Today":
+                        q_limit = q_today
+                    elif q_date_filter == "This Month":
+                        q_limit = q_today.replace(day=1)
+                    elif q_date_filter == "Last 30 Days":
+                        q_limit = q_today - datetime.timedelta(days=30)
+                    display_q_df = display_q_df[display_q_df["created_at_dt"] >= q_limit]
+
+            if search_query.strip():
+                sq = search_query.strip().lower()
+                display_q_df = display_q_df[
+                    display_q_df["company_name"].astype(str).str.lower().str.contains(sq) |
+                    display_q_df["project_name"].astype(str).str.lower().str.contains(sq) |
+                    display_q_df["quotation_number"].astype(str).str.lower().str.contains(sq) |
+                    display_q_df["lead_generator"].astype(str).str.lower().str.contains(sq)
+                ]
+
+        if display_q_df.empty:
+            st.caption("No quotations match selected filters.")
+        else:
+            # Pagination: show 20 items per page to avoid rendering hundreds of widget-heavy cards
+            PAGE_SIZE = 20
+            total_pages = max(1, (len(display_q_df) + PAGE_SIZE - 1) // PAGE_SIZE)
+            q_page = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1, key="q_dir_page") if total_pages > 1 else 1
+            page_start = (q_page - 1) * PAGE_SIZE
+            page_slice = display_q_df.iloc[page_start:page_start + PAGE_SIZE]
+            st.caption(f"Showing {page_start+1}–{min(page_start+PAGE_SIZE, len(display_q_df))} of {len(display_q_df)} quotations")
+
+            for idx, q_row in page_slice.iterrows():
+                q_id = int(q_row["id"])
+                status_curr = str(q_row["status"])
+                badge = "🟢 Successful" if status_curr == "Successful" else ("🟡 Only Sent" if status_curr == "Sent" else "🔴 Declined")
+                lg_display = str(q_row["lead_generator"]) if q_row.get("lead_generator") and str(q_row["lead_generator"]).strip() not in ("None", "nan", "") else "Unassigned"
+                
+                with st.container():
+                    st.markdown(f"""
+                    <div class="compact-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <h4 style="margin: 0; color: #1f2937;">{q_row['quotation_number']} — {q_row['project_name']}</h4>
+                                <p style="margin: 2px 0 0 0; font-size: 0.82rem; color: #4b5563;">🏢 <strong>{q_row['company_name']}</strong> | Date: {q_row['created_at']} | Created By: <code>{q_row['created_by']}</code> | 👤 <strong>Lead Generator: {lg_display}</strong></p>
+                                {f'<p style="margin: 2px 0 0 0; font-size: 0.78rem; color: #6b7280;"><em>{q_row["notes"]}</em></p>' if q_row.get("notes") else ''}
+                            </div>
+                            <div style="text-align: right;">
+                                <h3 style="margin: 0; color: #111111;">PKR {_safe_float(q_row['amount']):,.0f}</h3>
+                                <span style="font-size: 0.78rem; font-weight: 600; color: #374151;">{badge}</span>
+                            </div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    if role != "CEO":
+                        btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([1.8, 1.8, 1.2, 1.2])
+                        
+                        if status_curr == "Sent":
+                            with btn_col1:
+                                if st.button(f"✅ Approve", key=f"approve_q_{q_id}", type="primary", use_container_width=True):
+                                    try:
+                                        sb.table("quotations").update({"status": "Successful"}).eq("id", q_id).execute()
+                                        auto_provision_project(str(q_row['company_name']), str(q_row['project_name']))
+                                        confirm_and_rerun(f"🎉 Quotation '{q_row['quotation_number']}' Approved!", icon="✅")
+                                    except Exception as e:
+                                        st.error(f"Error approving quotation: {e}")
+ 
+                            with btn_col2:
+                                if st.button(f"❌ Decline", key=f"decline_q_{q_id}", use_container_width=True):
+                                    try:
+                                        sb.table("quotations").update({"status": "Declined"}).eq("id", q_id).execute()
+                                        confirm_warn_and_rerun(f"Quotation '{q_row['quotation_number']}' marked as Declined.", icon="⚠️")
+                                    except Exception as e:
+                                        st.error(f"Error declining quotation: {e}")
+ 
+                        with btn_col3:
+                            with st.popover("✏️ Edit", use_container_width=True):
+                                with st.form(f"edit_q_form_{q_id}"):
+                                    edit_company = st.text_input("Company Name", value=str(q_row["company_name"]))
+                                    edit_proj = st.text_input("Project Name", value=str(q_row["project_name"]))
+                                    edit_amt = st.number_input("Amount (PKR)", value=_safe_float(q_row["amount"]))
+                                    
+                                    if role == "Lead Generator":
+                                        edit_lg_val = current_user["username"]
+                                    else:
+                                        edit_lg_select_opts = ["-- Keep Current: " + str(q_row.get("lead_generator") or "Unassigned") + " --"] + lg_options + ["➕ Assign New Lead Generator"]
+                                        edit_lg_opt = st.selectbox("Lead Generator Credit", edit_lg_select_opts, key=f"edit_lg_select_{q_id}")
+                                        if edit_lg_opt == "➕ Assign New Lead Generator":
+                                            edit_lg_val = st.text_input("New Lead Generator Name", placeholder="e.g. Agent Jane", key=f"edit_lg_text_{q_id}")
+                                        elif edit_lg_opt.startswith("-- Keep Current"):
+                                            edit_lg_val = str(q_row.get("lead_generator") or "")
+                                        else:
+                                            edit_lg_val = edit_lg_opt
+                                            
+                                    edit_st = st.selectbox("Status", ["Sent", "Successful", "Declined"], index=["Sent", "Successful", "Declined"].index(status_curr) if status_curr in ["Sent", "Successful", "Declined"] else 0)
+                                    edit_notes = st.text_area("Notes", value=str(q_row["notes"] or ""))
+ 
+                                    if st.form_submit_button("Save Changes"):
+                                        sb.table("quotations").update({
+                                            "company_name": edit_company.strip(),
+                                            "project_name": edit_proj.strip(),
+                                            "amount": float(edit_amt),
+                                            "lead_generator": edit_lg_val.strip() or None,
+                                            "status": edit_st,
+                                            "notes": edit_notes.strip() or None
+                                        }).eq("id", q_id).execute()
+                                        if edit_st == "Successful":
+                                            auto_provision_project(edit_company.strip(), edit_proj.strip())
+                                        confirm_and_rerun(f"Updated quotation #{q_id}.", icon="💾")
+ 
+                        with btn_col4:
+                            if st.button("🗑️ Delete", key=f"del_q_{q_id}", use_container_width=True):
+                                sb.table("quotations").delete().eq("id", q_id).execute()
+                                confirm_warn_and_rerun(f"Deleted quotation #{q_id}.", icon="🗑️")
+
+    if q_tab2:
+        with q_tab2:
+            render_planning_section(role, current_user, q_df, comp_all_df)

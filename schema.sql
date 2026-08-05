@@ -18,7 +18,7 @@ CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     username VARCHAR(255) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
-    role VARCHAR(50) NOT NULL CHECK (role IN ('CEO', 'Accountant', 'Advance')),
+    role VARCHAR(255) NOT NULL,
     can_view_dashboard BOOLEAN NOT NULL DEFAULT FALSE,
     reset_token TEXT
 );
@@ -85,6 +85,82 @@ CREATE TABLE vouchers (
     created_at DATE NOT NULL DEFAULT CURRENT_DATE
 );
 
+-- Create quotations table
+CREATE TABLE IF NOT EXISTS quotations (
+    id SERIAL PRIMARY KEY,
+    company_name VARCHAR(255) NOT NULL,
+    project_name VARCHAR(255) NOT NULL,
+    quotation_number VARCHAR(100),
+    amount FLOAT NOT NULL DEFAULT 0.0,
+    status VARCHAR(50) NOT NULL DEFAULT 'Sent' CHECK (status IN ('Sent', 'Successful', 'Declined')),
+    lead_generator VARCHAR(255),
+    created_by VARCHAR(255),
+    notes TEXT,
+    created_at DATE NOT NULL DEFAULT CURRENT_DATE
+);
+
+-- Create quotation_estimates_invoices table (Connected Cost Estimates & Invoices)
+CREATE TABLE IF NOT EXISTS quotation_estimates_invoices (
+    id SERIAL PRIMARY KEY,
+    quotation_id INT NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
+    invoice_number VARCHAR(100),
+    est_material_cost FLOAT NOT NULL DEFAULT 0.0,
+    est_labor_cost FLOAT NOT NULL DEFAULT 0.0,
+    est_overhead_cost FLOAT NOT NULL DEFAULT 0.0,
+    invoice_amount FLOAT NOT NULL DEFAULT 0.0,
+    invoice_status VARCHAR(50) NOT NULL DEFAULT 'Draft' CHECK (invoice_status IN ('Draft', 'Issued', 'Paid', 'Partially Paid')),
+    updated_by VARCHAR(255),
+    created_at DATE NOT NULL DEFAULT CURRENT_DATE
+);
+
+-- Create quotation_cost_components table (Itemized Cost Components for Quotation Planning & Purchase Comparison)
+CREATE TABLE IF NOT EXISTS quotation_cost_components (
+    id SERIAL PRIMARY KEY,
+    quotation_id INT NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
+    component_name VARCHAR(255) NOT NULL,
+    price FLOAT NOT NULL DEFAULT 0.0,
+    description TEXT,
+    actual_price FLOAT NOT NULL DEFAULT 0.0,
+    purchaser_notes TEXT,
+    purchased_by VARCHAR(255),
+    created_by VARCHAR(255),
+    created_at DATE NOT NULL DEFAULT CURRENT_DATE
+);
+
+-- Enable Row Level Security (RLS) and grant explicit CRUD access policies
+ALTER TABLE quotations ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public select on quotations" ON quotations;
+DROP POLICY IF EXISTS "Allow public insert on quotations" ON quotations;
+DROP POLICY IF EXISTS "Allow public update on quotations" ON quotations;
+DROP POLICY IF EXISTS "Allow public delete on quotations" ON quotations;
+
+CREATE POLICY "Allow public select on quotations" ON quotations FOR SELECT USING (true);
+CREATE POLICY "Allow public insert on quotations" ON quotations FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public update on quotations" ON quotations FOR UPDATE USING (true);
+CREATE POLICY "Allow public delete on quotations" ON quotations FOR DELETE USING (true);
+
+ALTER TABLE quotation_estimates_invoices ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public select on quotation_estimates_invoices" ON quotation_estimates_invoices;
+DROP POLICY IF EXISTS "Allow public insert on quotation_estimates_invoices" ON quotation_estimates_invoices;
+DROP POLICY IF EXISTS "Allow public update on quotation_estimates_invoices" ON quotation_estimates_invoices;
+DROP POLICY IF EXISTS "Allow public delete on quotation_estimates_invoices" ON quotation_estimates_invoices;
+
+CREATE POLICY "Allow public select on quotation_estimates_invoices" ON quotation_estimates_invoices FOR SELECT USING (true);
+CREATE POLICY "Allow public insert on quotation_estimates_invoices" ON quotation_estimates_invoices FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public update on quotation_estimates_invoices" ON quotation_estimates_invoices FOR UPDATE USING (true);
+CREATE POLICY "Allow public delete on quotation_estimates_invoices" ON quotation_estimates_invoices FOR DELETE USING (true);
+
+ALTER TABLE quotation_cost_components ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow public select on quotation_cost_components" ON quotation_cost_components;
+DROP POLICY IF EXISTS "Allow public insert on quotation_cost_components" ON quotation_cost_components;
+DROP POLICY IF EXISTS "Allow public update on quotation_cost_components" ON quotation_cost_components;
+DROP POLICY IF EXISTS "Allow public delete on quotation_cost_components" ON quotation_cost_components;
+
+CREATE POLICY "Allow public select on quotation_cost_components" ON quotation_cost_components FOR SELECT USING (true);
+CREATE POLICY "Allow public insert on quotation_cost_components" ON quotation_cost_components FOR INSERT WITH CHECK (true);
+CREATE POLICY "Allow public update on quotation_cost_components" ON quotation_cost_components FOR UPDATE USING (true);
+CREATE POLICY "Allow public delete on quotation_cost_components" ON quotation_cost_components FOR DELETE USING (true);
+
 -- ==============================================================================
 -- 3. INITIAL SEED LOGISTICS PIPELINE (Deterministic Values)
 -- ==============================================================================
@@ -121,3 +197,9 @@ INSERT INTO advances (project_id, person_name, allocated_amount) VALUES
 ((SELECT id FROM projects WHERE name='Alpha Phase 1'), 'Alice Smith', 5000.00),
 ((SELECT id FROM projects WHERE name='Alpha Phase 1'), 'Bob Johnson', 3000.00)
 ON CONFLICT (project_id, person_name) DO NOTHING;
+
+-- Seed Sample Quotations
+INSERT INTO quotations (company_name, project_name, quotation_number, amount, status, created_by, notes) VALUES
+('Apex Holdings', 'HVAC Installation Phase 2', 'QT-2026-001', 450000.00, 'Successful', 'asif.arain', 'Quotation approved by client. Proceeding with cost estimation.'),
+('Nexus Ventures', 'Solar Panel Array Setup', 'QT-2026-002', 850000.00, 'Sent', 'accountant', 'Quotation sent via email. Awaiting review.')
+ON CONFLICT DO NOTHING;
