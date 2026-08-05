@@ -1862,7 +1862,7 @@ elif menu == "🏢 Execution(Accounts)":
                                 confirm_warn_and_rerun(f"Deleted project '{active_project_row['name']}'.", icon="🗑️")
                             except Exception as e:
                                 st.error(f"Cannot delete project: {e}")
-                        if pe_col4.button("🏗️ Sub-Proj", key=f"add_sub_proj_btn_{pid}", use_container_width=True, help="Add Sub-Project"):
+                        if pe_col4.button("📁 Category", key=f"add_sub_proj_btn_{pid}", use_container_width=True, help="Add Expense Category Header"):
                             st.session_state[f"show_add_sub_{pid}"] = not st.session_state.get(f"show_add_sub_{pid}", False)
                             st.rerun()
 
@@ -1894,11 +1894,11 @@ elif menu == "🏢 Execution(Accounts)":
                     is_adding_sub = st.session_state.get(f"show_add_sub_{pid}", False)
                     if is_adding_sub and not is_read_only:
                         with st.form(f"add_sub_p_form_{pid}", clear_on_submit=True):
-                            st.markdown(f"**🏗️ Add Sub-Project under '{active_project_row['name']}'**")
-                            sub_p_name = st.text_input("Sub-Project Title*", placeholder="e.g. Phase 1 Electrical Wiring", key=f"new_sub_name_{pid}")
-                            sub_p_desc = st.text_area("Sub-Project Scope Notes (Optional)", height=40, key=f"new_sub_desc_{pid}")
+                            st.markdown(f"**📁 Add Expense Category Header under '{active_project_row['name']}'**")
+                            sub_p_name = st.text_input("Category Header Title*", placeholder="e.g. Accessories, Electrical, Site Labor", key=f"new_sub_name_{pid}")
+                            sub_p_desc = st.text_area("Category Scope Notes (Optional)", height=40, key=f"new_sub_desc_{pid}")
                             sap1, sap2 = st.columns(2)
-                            save_sub = sap1.form_submit_button("➕ Create Sub-Project", type="primary", use_container_width=True)
+                            save_sub = sap1.form_submit_button("➕ Create Category Header", type="primary", use_container_width=True)
                             cancel_sub = sap2.form_submit_button("✖️ Cancel", use_container_width=True)
                             if save_sub:
                                 if sub_p_name.strip():
@@ -1910,11 +1910,11 @@ elif menu == "🏢 Execution(Accounts)":
                                             "description": full_sub_desc
                                         }).execute()
                                         st.session_state[f"show_add_sub_{pid}"] = False
-                                        confirm_and_rerun(f"🏗️ Sub-Project '{full_sub_title}' created successfully.", icon="✅")
+                                        confirm_and_rerun(f"📁 Category Header '{full_sub_title}' created successfully.", icon="✅")
                                     except Exception as e:
-                                        st.error(f"Cannot save sub-project: {e}")
+                                        st.error(f"Cannot save category: {e}")
                                 else:
-                                    st.error("Sub-project title cannot be empty.")
+                                    st.error("Category header title cannot be empty.")
                             if cancel_sub:
                                 st.session_state[f"show_add_sub_{pid}"] = False
                                 st.rerun()
@@ -1949,13 +1949,13 @@ elif menu == "🏢 Execution(Accounts)":
                     if not sub_projs_df.empty:
                         for _, sp_row in sub_projs_df.iterrows():
                             clean_sp_name = sp_row["name"].replace(f"{active_project_row['name']} → ", "").strip()
-                            sub_scope_options.append(f"🏗️ Sub-Project: {clean_sp_name}")
+                            sub_scope_options.append(f"📁 Expense Category: {clean_sp_name}")
 
-                    selected_audit_scope = st.selectbox("🎯 Select Audit Scope / Sub-Project", sub_scope_options, key=f"audit_scope_sel_{pid}")
+                    selected_audit_scope = st.selectbox("🎯 Select Audit Scope / Expense Category", sub_scope_options, key=f"audit_scope_sel_{pid}")
                     is_sub_scope = selected_audit_scope != "📊 Combined Main Project Scope"
-                    chosen_sub_title = selected_audit_scope.replace("🏗️ Sub-Project: ", "").strip() if is_sub_scope else None
+                    chosen_sub_title = selected_audit_scope.replace("📁 Expense Category: ", "").strip() if is_sub_scope else None
 
-                    audit_exp_label = f"📊 End-to-End Audit & Summary — Sub-Project: {chosen_sub_title}" if is_sub_scope else "📊 End-to-End Project Audit & Summary (Quotation to Execution)"
+                    audit_exp_label = f"📊 End-to-End Audit — Category: {chosen_sub_title}" if is_sub_scope else "📊 End-to-End Project Audit & Summary (Quotation to Execution)"
 
                     with st.expander(audit_exp_label, expanded=False):
                         # Filter ledgers by sub-project scope if selected
