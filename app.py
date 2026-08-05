@@ -1221,8 +1221,8 @@ ROLE_MAP = {
     "acc": "Accountant",
     "accountant": "Accountant",
     "accounts": "Accountant",
-    "lg": "Quotation Sender",
-    "lead generator": "Quotation Sender",
+    "lg": "Lead Generator",
+    "lead generator": "Lead Generator",
     "pur": "Quotation Sender",
     "purchase": "Quotation Sender",
     "purchaser": "Quotation Sender",
@@ -2885,7 +2885,7 @@ elif menu == "⚙️ Settings" and role in ("CEO", "Accountant"):
             st.markdown("**Add New Account Credentials**")
             acct_id = st.text_input("Username / ID", key="new_user_acct_id")
             acct_pw = st.text_input("Password", type="password", key="new_user_acct_pw")
-            acct_roles = st.multiselect("Assign System Roles", ["CEO", "Accountant", "Quotation Sender"], default=["Quotation Sender"])
+            acct_roles = st.multiselect("Assign System Roles", ["CEO", "Accountant", "Quotation Sender", "Lead Generator"], default=["Quotation Sender"])
 
             if st.form_submit_button("Create Account", type="primary"):
                 if not acct_roles:
@@ -2924,7 +2924,7 @@ elif menu == "⚙️ Settings" and role in ("CEO", "Accountant"):
             # --- FORM 1: ROLE UPDATE ---
             with st.form(f"change_role_form_{target_user_id}"):
                 st.markdown("🔄 **Update Account Role Assignment**")
-                role_options = ["CEO", "Accountant", "Quotation Sender"]
+                role_options = ["CEO", "Accountant", "Quotation Sender", "Lead Generator"]
 
                 # Parse current roles for default values
                 current_roles = [r.strip() for r in current_target_role.split(",")] if current_target_role else []
@@ -3001,8 +3001,9 @@ elif menu == "📋 Quotation & Planning":
     except Exception:
         registered_users = []
 
+    lead_gen_users = get_users_by_role("Lead Generator")
     existing_lgs = sorted(list(set(q_df["lead_generator"].dropna().astype(str).str.strip().unique()) - {"", "None", "nan"})) if not q_df.empty else []
-    lg_options = existing_lgs
+    lg_options = sorted(list(set(lead_gen_users + existing_lgs)))
 
     if "q_form_company" not in st.session_state: st.session_state["q_form_company"] = ""
     if "q_form_project" not in st.session_state: st.session_state["q_form_project"] = ""
