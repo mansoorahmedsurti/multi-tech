@@ -1937,6 +1937,10 @@ elif menu == "🏢 Execution(Accounts)":
                         quoted_val = float(q_row["amount"]) if q_row is not None else 0.0
 
                         # 2. Execution Totals
+                        inc_audit_df = inc_data
+                        exp_audit_df = exp_data
+                        loan_audit_df = loan_data
+
                         tot_income = float(inc_audit_df["amount"].sum()) if not inc_audit_df.empty else 0.0
                         tot_expense = float(exp_audit_df["amount"].sum()) if not exp_audit_df.empty else 0.0
                         tot_loan = float(loan_audit_df["amount"].sum()) if not loan_audit_df.empty else 0.0
