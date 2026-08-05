@@ -2397,8 +2397,7 @@ elif menu == "🏢 Execution(Accounts)":
                                             row_dt_val = _safe_date(row.get("created_at"))
                                             edit_date = fe3.date_input("Record Date", value=row_dt_val)
                                             
-                                            nature_opts = ["Cash", "Cheque", "Online Transfer", "Pay Order", "Direct Deposit"]
-                                            edit_nature = st.selectbox("Payment Nature", nature_opts, index=nature_opts.index(nature_val) if nature_val in nature_opts else 0) if has_nature else None
+                                            edit_nature = st.text_input("Payment Nature", value=str(nature_val or "")) if has_nature else None
                                             fs1, fs2 = st.columns(2)
                                             save_row = fs1.form_submit_button("💾 Save", type="primary", use_container_width=True)
                                             cancel_row = fs2.form_submit_button("✖️ Cancel", use_container_width=True)
@@ -2411,7 +2410,7 @@ elif menu == "🏢 Execution(Accounts)":
                                                             "created_at": str(edit_date)
                                                         }
                                                         if has_nature:
-                                                            update_data["cheque_number"] = edit_nature
+                                                            update_data["cheque_number"] = edit_nature.strip() if edit_nature else None
                                                         sb.table("ledgers").update(update_data).eq("id", row_id).execute()
                                                         st.session_state[edit_key] = False
                                                         confirm_and_rerun(f"✏️ {label_name} record updated to '{edit_title.strip()}'.", icon="💾")
@@ -2432,7 +2431,7 @@ elif menu == "🏢 Execution(Accounts)":
                                     new_title = f_col1.text_input("Component Description", key=f"t_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
                                     new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
                                     new_date = f_col3.date_input("Record Date", value=datetime.date.today(), key=f"d_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
-                                    new_nature = f_col4.selectbox("Payment Nature", ["Cash", "Cheque", "Online Transfer", "Pay Order", "Direct Deposit"], key=f"c_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
+                                    new_nature = f_col4.text_input("Payment Nature", placeholder="e.g. Cash, Online Transfer, Cheque #", key=f"c_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
                                     submit_rec = f_col5.form_submit_button("➕ Add Row", use_container_width=True)
                                 else:
                                     f_col1, f_col2, f_col3, f_col4 = st.columns([2.5, 2, 2, 1.5], vertical_alignment="bottom")
@@ -2453,7 +2452,7 @@ elif menu == "🏢 Execution(Accounts)":
                                                 "created_at": str(new_date)
                                             }
                                             if has_nature:
-                                                insert_data["cheque_number"] = new_nature
+                                                insert_data["cheque_number"] = new_nature.strip() if new_nature else None
                                             sb.table("ledgers").insert(insert_data).execute()
                                             confirm_and_rerun(f"📈 New {ledger_type.capitalize()} record '{new_title.strip()}' added (PKR {new_amount:,.0f}).", icon="📊")
                                         except Exception as e:
