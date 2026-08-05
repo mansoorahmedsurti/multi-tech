@@ -1882,6 +1882,19 @@ elif menu == "🏢 Execution(Accounts)":
                             else:
                                 vouch_html_rows = "<tr><td colspan='5' style='text-align:center; color:#64748b;'>No approved vouchers linked.</td></tr>"
 
+                            # Base64 logo for clean printing
+                            logo_b64 = ""
+                            logo_file = "logo.png" if os.path.exists("logo.png") else ("logo.jpeg" if os.path.exists("logo.jpeg") else ("logo.jpg" if os.path.exists("logo.jpg") else None))
+                            if logo_file:
+                                try:
+                                    import base64
+                                    with open(logo_file, "rb") as f_img:
+                                        b64_data = base64.b64encode(f_img.read()).decode("utf-8")
+                                        mime_type = "image/png" if logo_file.endswith(".png") else "image/jpeg"
+                                        logo_b64 = f"data:{mime_type};base64,{b64_data}"
+                                except Exception:
+                                    logo_b64 = ""
+
                             html_report_doc = f"""
                             <!DOCTYPE html>
                             <html>
@@ -1889,16 +1902,16 @@ elif menu == "🏢 Execution(Accounts)":
                             <style>
                                 body {{ font-family: 'Segoe UI', Arial, sans-serif; color: #0f172a; padding: 15px; margin: 0; background: #ffffff; }}
                                 .header-box {{ display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #2563eb; padding-bottom: 10px; margin-bottom: 15px; }}
-                                .title {{ font-size: 1.3rem; font-weight: bold; color: #1e3a8a; }}
-                                .subtitle {{ font-size: 0.9rem; color: #475569; }}
-                                .amounts-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }}
-                                .card {{ background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px; text-align: center; }}
-                                .card-label {{ font-size: 0.75rem; font-weight: 600; text-transform: uppercase; color: #64748b; margin-bottom: 4px; }}
-                                .card-val {{ font-size: 1.1rem; font-weight: 700; color: #0f172a; }}
+                                .title {{ font-size: 1.25rem; font-weight: bold; color: #1e3a8a; }}
+                                .subtitle {{ font-size: 0.85rem; color: #475569; }}
+                                .amounts-grid {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 20px; }}
+                                .card {{ background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; text-align: center; }}
+                                .card-label {{ font-size: 0.72rem; font-weight: 600; text-transform: uppercase; color: #64748b; margin-bottom: 3px; }}
+                                .card-val {{ font-size: 1.05rem; font-weight: 700; color: #0f172a; }}
                                 table {{ width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 20px; font-size: 0.85rem; }}
                                 th {{ background: #f1f5f9; color: #1e293b; text-align: left; padding: 8px; border: 1px solid #cbd5e1; font-weight: 600; }}
                                 td {{ padding: 7px 8px; border: 1px solid #e2e8f0; color: #334155; }}
-                                .sec-title {{ font-size: 1rem; font-weight: bold; color: #1e293b; margin-top: 15px; margin-bottom: 5px; border-left: 3px solid #2563eb; padding-left: 8px; }}
+                                .sec-title {{ font-size: 0.95rem; font-weight: bold; color: #1e293b; margin-top: 15px; margin-bottom: 5px; border-left: 3px solid #2563eb; padding-left: 8px; }}
                                 .btn-print {{ background: #2563eb; color: #ffffff; padding: 8px 16px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 0.9rem; margin-bottom: 15px; }}
                                 .btn-print:hover {{ background: #1d4ed8; }}
                                 @media print {{
@@ -1910,9 +1923,12 @@ elif menu == "🏢 Execution(Accounts)":
                             <body>
                                 <button class="btn-print" onclick="window.print()">🖨️ Print Report / Save PDF</button>
                                 <div class="header-box">
-                                    <div>
-                                        <div class="title">Multi Tech Engineering Group</div>
-                                        <div class="subtitle">Project Financial Audit & Component Summary Report</div>
+                                    <div style="display: flex; align-items: center; gap: 14px;">
+                                        {f'<img src="{logo_b64}" style="max-height: 52px; width: auto; object-fit: contain;" />' if logo_b64 else ''}
+                                        <div>
+                                            <div class="title">Multi Tech Engineering Group</div>
+                                            <div class="subtitle">Project Financial Audit & Component Summary Report</div>
+                                        </div>
                                     </div>
                                     <div style="text-align: right;">
                                         <div><strong>Company:</strong> {company_name}</div>
@@ -1937,6 +1953,11 @@ elif menu == "🏢 Execution(Accounts)":
                                     <div class="card">
                                         <div class="card-label">Execution Amount</div>
                                         <div class="card-val" style="color:#dc2626;">PKR {tot_actual_outflow:,.0f}</div>
+                                    </div>
+                                    <div class="card" style="background: {'#f0fdf4' if net_profit >= 0 else '#fef2f2'}; border-color: {'#86efac' if net_profit >= 0 else '#fca5a5'};">
+                                        <div class="card-label" style="color: {'#166534' if net_profit >= 0 else '#991b1b'};">Net Executed Profit</div>
+                                        <div class="card-val" style="color: {'#15803d' if net_profit >= 0 else '#b91c1c'};">PKR {net_profit:,.0f}</div>
+                                        <div style="font-size: 0.72rem; color: {'#166534' if net_profit >= 0 else '#991b1b'};">{profit_margin:.1f}% Margin</div>
                                     </div>
                                 </div>
 
