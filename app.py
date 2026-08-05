@@ -661,6 +661,30 @@ div[data-baseweb="calendar"] button:hover {
     background-color: #f3f4f6 !important;
 }
 
+/* Multiselect Badge / Tag Light High-Contrast Styling */
+div[data-testid="stMultiSelect"] span[data-baseweb="tag"],
+div[data-testid="stMultiSelect"] div[data-baseweb="tag"],
+span[data-baseweb="tag"], 
+div[data-baseweb="tag"] {
+    background-color: #e2e8f0 !important;
+    border: 1px solid #94a3b8 !important;
+    border-radius: 4px !important;
+    color: #0f172a !important;
+}
+div[data-testid="stMultiSelect"] span[data-baseweb="tag"] *,
+div[data-testid="stMultiSelect"] div[data-baseweb="tag"] *,
+span[data-baseweb="tag"] *, 
+div[data-baseweb="tag"] * {
+    color: #0f172a !important;
+    fill: #0f172a !important;
+}
+div[data-testid="stMultiSelect"] span[data-baseweb="tag"] svg,
+div[data-testid="stMultiSelect"] div[data-baseweb="tag"] svg,
+span[data-baseweb="tag"] svg,
+div[data-baseweb="tag"] svg {
+    fill: #334155 !important;
+}
+
 /* Toast, Modals, Dialogs, Tooltips, Popovers Grayscale Color Overrides */
 div[data-testid="stToast"] {
     background-color: #ffffff !important;
