@@ -683,38 +683,55 @@ div[data-baseweb="calendar"] button:hover {
     background-color: #f3f4f6 !important;
 }
 
-/* Multiselect Badge / Tag Vibrant High-Contrast Styling */
+/* Multiselect Badge / Tag – Ultra-High Specificity Override */
+div[data-testid="stMultiSelect"] span[data-baseweb="tag"],
+div[data-testid="stMultiSelect"] div[data-baseweb="tag"],
+section[data-testid="stSidebar"] span[data-baseweb="tag"],
+section[data-testid="stSidebar"] div[data-baseweb="tag"],
 [data-baseweb="tag"],
-[data-baseweb="tag"] *,
 div[data-baseweb="tag"],
-span[data-baseweb="tag"],
-div[data-testid="stMultiSelect"] [data-baseweb="tag"],
-div[data-testid="stMultiSelect"] [data-baseweb="tag"] * {
-    background-color: #2563eb !important;
-    background: #2563eb !important;
+span[data-baseweb="tag"] {
+    background-color: #7c3aed !important;
+    background: linear-gradient(135deg, #7c3aed 0%, #6366f1 100%) !important;
     color: #ffffff !important;
-    border: none !important;
-    border-radius: 6px !important;
+    border: 1px solid rgba(255,255,255,0.2) !important;
+    border-radius: 20px !important;
+    padding: 2px 8px !important;
+    font-weight: 600 !important;
 }
 
+div[data-testid="stMultiSelect"] span[data-baseweb="tag"] *,
+div[data-testid="stMultiSelect"] div[data-baseweb="tag"] *,
+section[data-testid="stSidebar"] [data-baseweb="tag"] *,
+[data-baseweb="tag"] *,
 [data-baseweb="tag"] span,
 [data-baseweb="tag"] div,
 [data-baseweb="tag"] p {
     color: #ffffff !important;
+    background-color: transparent !important;
+    background: transparent !important;
     font-weight: 600 !important;
     font-size: 0.88rem !important;
 }
 
+div[data-testid="stMultiSelect"] [data-baseweb="tag"] [role="button"],
 [data-baseweb="tag"] [role="button"],
 [data-baseweb="tag"] svg,
 [data-baseweb="tag"] path {
     fill: #ffffff !important;
     color: #ffffff !important;
     stroke: #ffffff !important;
+    background: transparent !important;
+}
+
+[data-baseweb="tag"]:hover {
+    background-color: #6d28d9 !important;
+    background: linear-gradient(135deg, #6d28d9 0%, #4f46e5 100%) !important;
 }
 
 [data-baseweb="tag"] [role="button"]:hover {
-    background-color: #1d4ed8 !important;
+    background-color: rgba(255,255,255,0.15) !important;
+    border-radius: 50% !important;
 }
 
 /* Toast, Modals, Dialogs, Tooltips, Popovers Grayscale Color Overrides */
