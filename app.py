@@ -738,7 +738,8 @@ def render_planning_section(role, current_user, q_df, comp_all_df):
     all_lgs = sorted(list(set(q_df["lead_generator"].dropna().astype(str).str.strip().unique()) - {"", "None", "nan"}))
     p_lg = plan_f2.selectbox("Filter Lead Generator", ["All Lead Generators"] + all_lgs, key="plan_lg_in")
 
-    disp_p_df = q_df.copy()
+    # Only approved ("Successful") quotations move into planning
+    disp_p_df = q_df[q_df["status"] == "Successful"].copy() if not q_df.empty else pd.DataFrame()
     if p_lg != "All Lead Generators":
         disp_p_df = disp_p_df[disp_p_df["lead_generator"] == p_lg]
 
@@ -969,7 +970,8 @@ def render_purchase_procurement_section(role, current_user, q_df, comp_all_df):
     all_lgs = sorted(list(set(q_df["lead_generator"].dropna().astype(str).str.strip().unique()) - {"", "None", "nan"}))
     p_lg = pur_f2.selectbox("Filter Lead Generator", ["All Lead Generators"] + all_lgs, key="pur_lg_in")
 
-    disp_p_df = q_df.copy()
+    # Only approved ("Successful") quotations move into procurement
+    disp_p_df = q_df[q_df["status"] == "Successful"].copy() if not q_df.empty else pd.DataFrame()
     if p_lg != "All Lead Generators":
         disp_p_df = disp_p_df[disp_p_df["lead_generator"] == p_lg]
 
@@ -1755,7 +1757,7 @@ elif menu == "🏢 Execution(Accounts)":
                     is_editing_proj = st.session_state.get("edit_proj_id") == pid
                     is_adding_proj = st.session_state.get(f"show_add_proj_{c_id}", False)
                     if not is_read_only:
-                        pe_col1, pe_col2, pe_col3 = p_edit_col.columns(3)
+                        pe_col1, pe_col2, pe_col3, pe_col4 = p_edit_col.columns([1, 1, 1, 1.8])
                         if pe_col1.button("➕", key=f"add_proj_btn_{c_id}", use_container_width=True, help="Create New Project"):
                             st.session_state[f"show_add_proj_{c_id}"] = not is_adding_proj
                             st.session_state["edit_proj_id"] = None
@@ -1770,6 +1772,9 @@ elif menu == "🏢 Execution(Accounts)":
                                 confirm_warn_and_rerun(f"Deleted project '{active_project_row['name']}'.", icon="🗑️")
                             except Exception as e:
                                 st.error(f"Cannot delete project: {e}")
+                        if pe_col4.button("🏗️ Sub-Proj", key=f"add_sub_proj_btn_{pid}", use_container_width=True, help="Add Sub-Project"):
+                            st.session_state[f"show_add_sub_{pid}"] = not st.session_state.get(f"show_add_sub_{pid}", False)
+                            st.rerun()
 
                     if is_editing_proj and not is_read_only:
                         with st.form(f"edit_proj_form_{pid}"):
@@ -1796,32 +1801,32 @@ elif menu == "🏢 Execution(Accounts)":
                                 st.session_state["edit_proj_id"] = None
                                 st.rerun()
 
-                    is_adding_proj = st.session_state.get(f"show_add_proj_{c_id}", False)
-                    if is_adding_proj and not is_read_only:
-                        with st.form(f"add_p_form_{c_id}", clear_on_submit=True):
-                            st.markdown("**➕ Add New Project under this Company**")
-                            p_name = st.text_input("New Project Title*", key=f"new_p_name_{c_id}")
-                            p_desc = st.text_area("Project Description / Scope Notes (Optional)", height=45, key=f"new_p_desc_{c_id}")
-                            ap1, ap2 = st.columns(2)
-                            save_new_p = ap1.form_submit_button("➕ Create Project Node", type="primary", use_container_width=True)
-                            cancel_new_p = ap2.form_submit_button("✖️ Cancel", use_container_width=True)
-                            if save_new_p:
-                                if p_name.strip():
+                    is_adding_sub = st.session_state.get(f"show_add_sub_{pid}", False)
+                    if is_adding_sub and not is_read_only:
+                        with st.form(f"add_sub_p_form_{pid}", clear_on_submit=True):
+                            st.markdown(f"**🏗️ Add Sub-Project under '{active_project_row['name']}'**")
+                            sub_p_name = st.text_input("Sub-Project Title*", placeholder="e.g. Phase 1 Electrical Wiring", key=f"new_sub_name_{pid}")
+                            sub_p_desc = st.text_area("Sub-Project Scope Notes (Optional)", height=40, key=f"new_sub_desc_{pid}")
+                            sap1, sap2 = st.columns(2)
+                            save_sub = sap1.form_submit_button("➕ Create Sub-Project", type="primary", use_container_width=True)
+                            cancel_sub = sap2.form_submit_button("✖️ Cancel", use_container_width=True)
+                            if save_sub:
+                                if sub_p_name.strip():
                                     try:
-                                        user_desc = p_desc.strip() if p_desc else ""
-                                        full_p_desc = f"{user_desc} {EXEC_TAG}".strip()
+                                        full_sub_title = f"{active_project_row['name']} → {sub_p_name.strip()}"
+                                        full_sub_desc = f"{sub_p_desc.strip()} {EXEC_TAG}".strip()
                                         sb.table("projects").insert({
-                                            "company_id": c_id, "name": p_name.strip(),
-                                            "description": full_p_desc
+                                            "company_id": c_id, "name": full_sub_title,
+                                            "description": full_sub_desc
                                         }).execute()
-                                        st.session_state[f"show_add_proj_{c_id}"] = False
-                                        confirm_and_rerun(f"📁 Project '{p_name.strip()}' created successfully.", icon="✅")
+                                        st.session_state[f"show_add_sub_{pid}"] = False
+                                        confirm_and_rerun(f"🏗️ Sub-Project '{full_sub_title}' created successfully.", icon="✅")
                                     except Exception as e:
-                                        st.error(f"Cannot save project: {e}")
+                                        st.error(f"Cannot save sub-project: {e}")
                                 else:
-                                    st.error("Project title cannot be empty.")
-                            if cancel_new_p:
-                                st.session_state[f"show_add_proj_{c_id}"] = False
+                                    st.error("Sub-project title cannot be empty.")
+                            if cancel_sub:
+                                st.session_state[f"show_add_sub_{pid}"] = False
                                 st.rerun()
 
                     p_bal = get_project_balance(pid, _precomputed=_all_balances, _zero=_zero_bal)
@@ -1998,6 +2003,7 @@ elif menu == "🏢 Execution(Accounts)":
                                         {f'<img src="{logo_b64}" style="max-height: 58px; width: auto; object-fit: contain;" />' if logo_b64 else ''}
                                         <div>
                                             <div class="subtitle" style="font-size: 1rem; font-weight: 700; color: #1e3a8a;">Project Financial Audit & Component Summary Report</div>
+                                            <div style="font-size: 0.85rem; color: #2563eb; font-weight: bold; margin-top: 2px;">Quotation Reference #: {q_row['quotation_number'] if q_row is not None else 'N/A'}</div>
                                         </div>
                                     </div>
                                     <div style="text-align: right;">
@@ -2237,21 +2243,26 @@ elif menu == "🏢 Execution(Accounts)":
 
                     t1, t2, t3 = st.tabs(["🟢 Income", "🔵 Loans", "💳 Staff Advances"])
 
-                    def render_simple_form_tab(data_df, ledger_type, label_name):
-                        has_cheque = (ledger_type == "income")
+                    def render_simple_form_tab(data_df, ledger_type, label_name, sub_p_name=None):
+                        has_nature = (ledger_type == "income")
+                        
+                        target_data_df = data_df.copy() if not data_df.empty else pd.DataFrame()
+                        if sub_p_name and not target_data_df.empty:
+                            if "sub_project" in target_data_df.columns:
+                                target_data_df = target_data_df[target_data_df["sub_project"] == sub_p_name]
 
-                        if not data_df.empty:
-                            for _, row in data_df.iterrows():
+                        if not target_data_df.empty:
+                            for _, row in target_data_df.iterrows():
                                 row_id = int(row["id"])
                                 edit_key = f"edit_{ledger_type}_{row_id}"
                                 is_editing_row = st.session_state.get(edit_key, False)
-                                cheque_val = row["cheque_number"] if "cheque_number" in row and not pd.isna(row["cheque_number"]) else ""
+                                nature_val = row["cheque_number"] if "cheque_number" in row and not pd.isna(row["cheque_number"]) else "Cash"
 
                                 with st.container(border=True):
                                     rc1, rc2, rc3 = st.columns([4, 2.5, 1.8])
                                     title_display = row["title"]
-                                    if has_cheque and cheque_val:
-                                        title_display += f"  \n🏦 Cheque #: `{cheque_val}`"
+                                    if has_nature and nature_val:
+                                        title_display += f"  \n🏷️ Nature: `{nature_val}`"
                                     rc1.markdown(f"**{title_display}**")
                                     rc2.markdown(f"PKR {row['amount']:,.0f}")
                                     if not is_read_only:
@@ -2273,7 +2284,9 @@ elif menu == "🏢 Execution(Accounts)":
                                             edit_amount = fe2.number_input("Amount (PKR)", min_value=0.0, step=500.0, value=float(row["amount"]))
                                             row_dt_val = pd.to_datetime(row["created_at"]).date() if "created_at" in row and not pd.isna(row["created_at"]) else datetime.date.today()
                                             edit_date = fe3.date_input("Record Date", value=row_dt_val)
-                                            edit_cheque = st.text_input("Cheque Number (Optional)", value=cheque_val) if has_cheque else None
+                                            
+                                            nature_opts = ["Cash", "Cheque", "Online Transfer", "Pay Order", "Direct Deposit"]
+                                            edit_nature = st.selectbox("Payment Nature", nature_opts, index=nature_opts.index(nature_val) if nature_val in nature_opts else 0) if has_nature else None
                                             fs1, fs2 = st.columns(2)
                                             save_row = fs1.form_submit_button("💾 Save", type="primary", use_container_width=True)
                                             cancel_row = fs2.form_submit_button("✖️ Cancel", use_container_width=True)
@@ -2285,8 +2298,8 @@ elif menu == "🏢 Execution(Accounts)":
                                                             "amount": float(edit_amount),
                                                             "created_at": str(edit_date)
                                                         }
-                                                        if has_cheque:
-                                                            update_data["cheque_number"] = (edit_cheque.strip() or None) if edit_cheque else None
+                                                        if has_nature:
+                                                            update_data["cheque_number"] = edit_nature
                                                         sb.table("ledgers").update(update_data).eq("id", row_id).execute()
                                                         st.session_state[edit_key] = False
                                                         confirm_and_rerun(f"✏️ {label_name} record updated to '{edit_title.strip()}'.", icon="💾")
@@ -2301,20 +2314,20 @@ elif menu == "🏢 Execution(Accounts)":
                             st.caption("No record.")
 
                         if not is_read_only:
-                            with st.form(f"add_entry_{ledger_type}_{pid}", clear_on_submit=True):
-                                if has_cheque:
+                            with st.form(f"add_entry_{ledger_type}_{pid}_{sub_p_name or 'main'}", clear_on_submit=True):
+                                if has_nature:
                                     f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns([2.2, 1.8, 1.8, 1.8, 1.4], vertical_alignment="bottom")
-                                    new_title = f_col1.text_input("Component", key=f"t_in_{ledger_type}_{pid}")
-                                    new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}")
-                                    new_date = f_col3.date_input("Record Date", value=datetime.date.today(), key=f"d_in_{ledger_type}_{pid}")
-                                    new_cheque = f_col4.text_input("Cheque Number (Optional)", key=f"c_in_{ledger_type}_{pid}")
+                                    new_title = f_col1.text_input("Component Description", key=f"t_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
+                                    new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
+                                    new_date = f_col3.date_input("Record Date", value=datetime.date.today(), key=f"d_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
+                                    new_nature = f_col4.selectbox("Payment Nature", ["Cash", "Cheque", "Online Transfer", "Pay Order", "Direct Deposit"], key=f"c_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
                                     submit_rec = f_col5.form_submit_button("➕ Add Row", use_container_width=True)
                                 else:
                                     f_col1, f_col2, f_col3, f_col4 = st.columns([2.5, 2, 2, 1.5], vertical_alignment="bottom")
-                                    new_title = f_col1.text_input("Component", key=f"t_in_{ledger_type}_{pid}")
-                                    new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}")
-                                    new_date = f_col3.date_input("Record Date", value=datetime.date.today(), key=f"d_in_{ledger_type}_{pid}")
-                                    new_cheque = None
+                                    new_title = f_col1.text_input("Component Description", key=f"t_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
+                                    new_amount = f_col2.number_input("Value Amount (PKR)", value=None, min_value=0.0, step=500.0, placeholder="Amount (PKR)", key=f"a_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
+                                    new_date = f_col3.date_input("Record Date", value=datetime.date.today(), key=f"d_in_{ledger_type}_{pid}_{sub_p_name or 'm'}")
+                                    new_nature = None
                                     submit_rec = f_col4.form_submit_button("➕ Add Row", use_container_width=True)
 
                                 if submit_rec:
@@ -2323,12 +2336,12 @@ elif menu == "🏢 Execution(Accounts)":
                                             insert_data = {
                                                 "project_id": pid,
                                                 "type": ledger_type,
-                                                "title": new_title.strip(),
+                                                "title": f"[{sub_p_name}] {new_title.strip()}" if sub_p_name else new_title.strip(),
                                                 "amount": float(new_amount),
                                                 "created_at": str(new_date)
                                             }
-                                            if has_cheque:
-                                                insert_data["cheque_number"] = (new_cheque.strip() or None) if new_cheque else None
+                                            if has_nature:
+                                                insert_data["cheque_number"] = new_nature
                                             sb.table("ledgers").insert(insert_data).execute()
                                             confirm_and_rerun(f"📈 New {ledger_type.capitalize()} record '{new_title.strip()}' added (PKR {new_amount:,.0f}).", icon="📊")
                                         except Exception as e:
@@ -2960,6 +2973,18 @@ elif menu == "📋 Quotation & Planning":
         q_tab1, q_tab2 = st.tabs(["📜 Quotation Directory", "📑 Initial Planning & Justification Tab"])
 
     with q_tab1:
+        # Expiring Quotation Reminders (> 14 days pending)
+        if not q_df.empty:
+            q_df_check = q_df.copy()
+            q_df_check["created_at_dt"] = pd.to_datetime(q_df_check["created_at"]).dt.date
+            today_dt = datetime.date.today()
+            expiring_q = q_df_check[(q_df_check["status"] == "Sent") & (q_df_check["created_at_dt"] <= (today_dt - datetime.timedelta(days=14)))]
+            if not expiring_q.empty:
+                st.warning(f"⏰ **Expiring Quotation Reminder**: {len(expiring_q)} pending quotation(s) sent over 14 days ago require review or follow-up!")
+                with st.expander("🔔 View Expiring Quotations List", expanded=False):
+                    for _, ex_q in expiring_q.iterrows():
+                        st.markdown(f"• **{ex_q['quotation_number']}** — {ex_q['company_name']} ({ex_q['project_name']}) | PKR {_safe_float(ex_q['amount']):,.0f} | Sent on {ex_q['created_at']}")
+
         total_q = len(q_df) if not q_df.empty else 0
 
         if role != "CEO":
