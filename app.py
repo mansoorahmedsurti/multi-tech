@@ -1310,7 +1310,7 @@ if st.sidebar.button("🚪 Log out", use_container_width=True):
 # ==============================================================================
 
 def render_monthly_report_view():
-    st.subheader("📅 Monthly Report")
+    
     
     def _parse_sp_item(item_val):
         t_str = str(item_val).strip()
@@ -1771,7 +1771,9 @@ if menu == "📊 Dashboard":
         st.rerun()
 
     if st.session_state["show_monthly_report"]:
-        t_col1.image("logo.png", width=120)
+        logo_col, title_col = t_col1.columns([2.5, 4.5], vertical_alignment="center")
+        logo_col.image("logo.png", width=120)
+        title_col.markdown("<h2 style='margin:0; line-height:1.2;'>📅 Monthly Report</h2>", unsafe_allow_html=True)
         render_monthly_report_view()
         st.stop()
     else:
