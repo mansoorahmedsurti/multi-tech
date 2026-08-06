@@ -1828,18 +1828,18 @@ if menu == "📊 Dashboard":
     m3.metric("Field Worker Expenses", f"PKR {spent_adv:,.0f}" if spent_adv else "PKR 0", delta=f"{spent_adv:,.0f} Logged Spends", delta_color="inverse")
     m4.metric("Net Profit", f"PKR {net_profit:,.0f}" if net_profit else "PKR 0")
 
-    with st.expander(f"📊 Detailed Financial Outflows & Advances Audit ({time_filter})"):
+    with st.expander(f"📊 Detailed Financial Summary ({time_filter})"):
         st.markdown(f"""
-* **Revenue Inflow (Income)**: `PKR {inc:,.0f}`
-* **Capital Infusions (Loans)**: `+ PKR {total_loans:,.0f}`
-* **Direct Expenses**: `- PKR {exp:,.0f}`
-* **Field Worker Expenses Logged**: `- PKR {spent_adv:,.0f}`
-* **Field Advances Allocated**: `PKR {alloc_adv:,.0f}` *(Unspent Balance: PKR {unspent_advances:,.0f})*
+* **Income**: `PKR {inc:,.0f}`
+* **Loans**: `+ PKR {total_loans:,.0f}`
+* **Expenses**: `- PKR {exp:,.0f}`
+* **Staff Expenses**: `- PKR {spent_adv:,.0f}`
+* **Staff Advances**: `PKR {alloc_adv:,.0f}` *(Remaining: PKR {unspent_advances:,.0f})*
 ---
-* **Total Net Liquid Balance**: **`PKR {overall_bal:,.0f}`**
+* **Balance**: **`PKR {overall_bal:,.0f}`**
 """)
         if not advances_df.empty:
-            st.markdown("##### 💳 Field Worker Staff Expense Audit Table")
+            st.markdown("##### 💳 Staff Advances Audit Table")
             adv_dash_rows = []
             for _, a_r in advances_df.iterrows():
                 adv_id_val = int(a_r["id"])
@@ -1847,10 +1847,10 @@ if menu == "📊 Dashboard":
                 w_spent_tot = float(w_sp["amount_spent"].sum()) if not w_sp.empty else 0.0
                 w_alloc_tot = float(a_r["allocated_amount"])
                 adv_dash_rows.append({
-                    "Field Worker": a_r["person_name"],
-                    "Allocated Advance": f"PKR {w_alloc_tot:,.0f}",
-                    "Itemized Expenses Logged": f"PKR {w_spent_tot:,.0f}",
-                    "Unspent Balance": f"PKR {(w_alloc_tot - w_spent_tot):,.0f}"
+                    "Staff": a_r["person_name"],
+                    "Advances": f"PKR {w_alloc_tot:,.0f}",
+                    "Expenses": f"PKR {w_spent_tot:,.0f}",
+                    "Remaining": f"PKR {(w_alloc_tot - w_spent_tot):,.0f}"
                 })
             disp_adv_dash = pd.DataFrame(adv_dash_rows)
             disp_adv_dash.insert(0, "#", range(1, len(disp_adv_dash) + 1))
