@@ -691,10 +691,10 @@ section[data-testid="stSidebar"] div[data-baseweb="tag"],
 [data-baseweb="tag"],
 div[data-baseweb="tag"],
 span[data-baseweb="tag"] {
-    background-color: #7c3aed !important;
-    background: linear-gradient(135deg, #7c3aed 0%, #6366f1 100%) !important;
-    color: #ffffff !important;
-    border: 1px solid rgba(255,255,255,0.2) !important;
+    background-color: #f1f5f9 !important;
+    background: #f1f5f9 !important;
+    color: #0f172a !important;
+    border: 1px solid #cbd5e1 !important;
     border-radius: 20px !important;
     padding: 2px 8px !important;
     font-weight: 600 !important;
@@ -707,7 +707,7 @@ section[data-testid="stSidebar"] [data-baseweb="tag"] *,
 [data-baseweb="tag"] span,
 [data-baseweb="tag"] div,
 [data-baseweb="tag"] p {
-    color: #ffffff !important;
+    color: #0f172a !important;
     background-color: transparent !important;
     background: transparent !important;
     font-weight: 600 !important;
@@ -718,19 +718,19 @@ div[data-testid="stMultiSelect"] [data-baseweb="tag"] [role="button"],
 [data-baseweb="tag"] [role="button"],
 [data-baseweb="tag"] svg,
 [data-baseweb="tag"] path {
-    fill: #ffffff !important;
-    color: #ffffff !important;
-    stroke: #ffffff !important;
+    fill: #0f172a !important;
+    color: #0f172a !important;
+    stroke: #0f172a !important;
     background: transparent !important;
 }
 
 [data-baseweb="tag"]:hover {
-    background-color: #6d28d9 !important;
-    background: linear-gradient(135deg, #6d28d9 0%, #4f46e5 100%) !important;
+    background-color: #e2e8f0 !important;
+    background: #e2e8f0 !important;
 }
 
 [data-baseweb="tag"] [role="button"]:hover {
-    background-color: rgba(255,255,255,0.15) !important;
+    background-color: rgba(15, 23, 42, 0.1) !important;
     border-radius: 50% !important;
 }
 
