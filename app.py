@@ -1438,6 +1438,37 @@ def render_monthly_report_view():
     # Inject print styling (always present, but only takes effect on window.print())
     st.markdown("""
         <style>
+        /* Screen styling to utilize space and reduce font size */
+        .monthly-report-table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+            margin-bottom: 12px !important;
+            font-size: 0.85rem !important;
+            font-family: inherit !important;
+        }
+        .monthly-report-table th, .monthly-report-table td {
+            border: 1px solid #e2e8f0 !important;
+            padding: 5px 8px !important;
+            text-align: left !important;
+        }
+        .monthly-report-table th {
+            background-color: #f8fafc !important;
+            font-weight: 600 !important;
+            color: #1e293b !important;
+        }
+        .monthly-report-table tr:nth-child(even) {
+            background-color: #f8fafc !important;
+        }
+        div.company-print-block {
+            margin-top: 10px !important;
+            margin-bottom: 10px !important;
+        }
+        div.project-print-block {
+            margin-left: 15px !important;
+            margin-top: 10px !important;
+            margin-bottom: 10px !important;
+        }
+        
         @media print {
             /* Hide Streamlit sidebar, top navigation, parameters selectboxes, and footer */
             section[data-testid="stSidebar"],
@@ -1451,21 +1482,21 @@ def render_monthly_report_view():
             }
             /* Reset Block Container Padding and Max-Width */
             div.block-container {
-                padding-top: 1rem !important;
-                padding-bottom: 1rem !important;
-                padding-left: 1rem !important;
-                padding-right: 1rem !important;
+                padding-top: 0.5rem !important;
+                padding-bottom: 0.5rem !important;
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
                 max-width: 100% !important;
             }
             /* Clean table formatting for paper */
-            table {
+            .monthly-report-table {
                 width: 100% !important;
                 border-collapse: collapse !important;
             }
-            th, td {
+            .monthly-report-table th, .monthly-report-table td {
                 border: 1px solid #cbd5e1 !important;
-                padding: 6px 8px !important;
-                font-size: 10pt !important;
+                padding: 4px 6px !important;
+                font-size: 9pt !important;
             }
             h1, h2, h3, h4, h5 {
                 color: #000000 !important;
@@ -1718,23 +1749,26 @@ def render_monthly_report_view():
                     "Reference": e["cheque"],
                     "Amount (PKR)": f"PKR {amt:,.0f}"
                 })
-                
-            # Project Header Box and Table
+                # Project Header Box and Table
             st.markdown(f"<div class='project-print-block' style='margin-left: 20px; margin-top: 15px;'>", unsafe_allow_html=True)
             st.markdown(f"##### 📁 Project: **{p_name}**")
             
             if tx_rows:
                 df_tx = pd.DataFrame(tx_rows)
                 df_tx.insert(0, "#", range(1, len(df_tx) + 1))
-                st.table(df_tx)
+                table_html = df_tx.to_html(index=False, classes='monthly-report-table')
+                st.markdown(table_html, unsafe_allow_html=True)
             else:
                 st.caption("No transaction entries logged this month.")
                 
+            p_profit = p_income - p_expense
+            p_profit_color = "#10B981" if p_profit >= 0 else "#EF4444"
             st.markdown(
-                f"<p style='font-size:0.9rem; font-weight:600; text-align:right; margin-top:-10px; margin-bottom:15px;'>"
-                f"Project Subtotals &rarr; Inflow: <span style='color:#10B981;'>PKR {p_income:,.0f}</span> | "
-                f"Outflow: <span style='color:#EF4444;'>PKR {p_expense:,.0f}</span> | "
-                f"Loan: <span style='color:#3B82F6;'>PKR {p_loans:,.0f}</span>"
+                f"<p style='font-size:0.85rem; font-weight:600; text-align:right; margin-top:-5px; margin-bottom:15px;'>"
+                f"Project Subtotals &rarr; Income: <span style='color:#10B981;'>PKR {p_income:,.0f}</span> | "
+                f"Expense: <span style='color:#EF4444;'>PKR {p_expense:,.0f}</span> | "
+                f"Loan: <span style='color:#3B82F6;'>PKR {p_loans:,.0f}</span> | "
+                f"Profit: <span style='color:{p_profit_color};'>PKR {p_profit:,.0f}</span>"
                 f"</p>",
                 unsafe_allow_html=True
             )
@@ -1743,13 +1777,16 @@ def render_monthly_report_view():
             c_income += p_income
             c_expense += p_expense
             c_loans += p_loans
-
+ 
+        c_profit = c_income - c_expense
+        c_profit_color = "#10B981" if c_profit >= 0 else "#EF4444"
         st.markdown(
-            f"<p style='font-size:0.95rem; font-weight:600; text-align:right; margin-top:5px; margin-bottom:20px;'>"
+            f"<p style='font-size:0.9rem; font-weight:600; text-align:right; margin-top:5px; margin-bottom:20px;'>"
             f"🏢 {c_name} Subtotals &rarr; "
             f"Income: <span style='color:#10B981;'>PKR {c_income:,.0f}</span> | "
-            f"Outcome/Spends: <span style='color:#EF4444;'>PKR {c_expense:,.0f}</span> | "
-            f"Loans: <span style='color:#3B82F6;'>PKR {c_loans:,.0f}</span>"
+            f"Expense: <span style='color:#EF4444;'>PKR {c_expense:,.0f}</span> | "
+            f"Loans: <span style='color:#3B82F6;'>PKR {c_loans:,.0f}</span> | "
+            f"Profit: <span style='color:{c_profit_color};'>PKR {c_profit:,.0f}</span>"
             f"</p>",
             unsafe_allow_html=True
         )
