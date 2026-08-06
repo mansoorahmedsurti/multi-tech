@@ -58,6 +58,7 @@ CREATE TABLE advances (
     project_id INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     person_name VARCHAR(255) NOT NULL,
     allocated_amount FLOAT NOT NULL DEFAULT 0.0,
+    created_at DATE NOT NULL DEFAULT CURRENT_DATE,
     UNIQUE(project_id, person_name)
 );
 

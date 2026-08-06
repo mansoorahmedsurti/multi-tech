@@ -137,7 +137,7 @@ def fetch_all_table_data():
     return {
         "ledgers": db.to_df(ledgers_res, columns=["id", "project_id", "type", "title", "cheque_number", "voucher_ref_id", "amount", "created_at"]),
         "vouchers": db.to_df(vouchers_res, columns=["id", "company_id", "project_id", "title", "amount", "remarks", "type", "created_by", "review_remarks", "status", "created_at"]),
-        "advances": db.to_df(advances_res, columns=["id", "project_id", "person_name", "allocated_amount"]),
+        "advances": db.to_df(advances_res, columns=["id", "project_id", "person_name", "allocated_amount", "created_at"]),
         "spends": db.to_df(spends_res, columns=["id", "advance_id", "item_name", "amount_spent", "created_at"]),
         "quotations": db.to_df(quotations_res, columns=["id", "company_name", "project_name", "quotation_number", "amount", "status", "lead_generator", "created_by", "notes", "created_at"]),
         "estimates": db.to_df(estimates_res, columns=["id", "quotation_id", "invoice_number", "est_material_cost", "est_labor_cost", "est_overhead_cost", "invoice_amount", "invoice_status", "updated_by", "created_at"]),
@@ -2188,6 +2188,9 @@ elif menu == "💳 Staff Advances":
                 adv_spent_amt = adv_spends["amount_spent"].apply(_safe_float).sum() if not adv_spends.empty else 0.0
                 adv_bal = adv_alloc_amt - adv_spent_amt
                 
+                # Fetch advances created_at date
+                adv_created_at = adv["created_at"] if "created_at" in adv.index and not pd.isna(adv["created_at"]) else None
+
                 # Spent details list
                 spent_items = []
                 if not adv_spends.empty:
@@ -2204,6 +2207,7 @@ elif menu == "💳 Staff Advances":
                     "allocated": adv_alloc_amt,
                     "spent": adv_spent_amt,
                     "balance": adv_bal,
+                    "created_at": adv_created_at,
                     "spends": spent_items
                 })
         
@@ -2258,14 +2262,17 @@ elif menu == "💳 Staff Advances":
                             pc3.markdown(f"<small>Remaining:</small><br/>**PKR {b['balance']:,.0f}**", unsafe_allow_html=True)
                             
                             # Spent concept list for this project
+                            st.markdown("<small>Expense Ledgers Logged:</small>", unsafe_allow_html=True)
+                            spend_rows = []
                             if b["spends"]:
-                                st.markdown("<small>Expense Ledgers Logged:</small>", unsafe_allow_html=True)
-                                spend_rows = []
                                 for item in b["spends"]:
                                     spend_rows.append(f"• **PKR {item['amount']:,.0f}** — *{item['item']}* <span style='color:#64748b; font-size:0.75rem;'>({item['date']})</span>")
-                                st.markdown("<br/>".join(spend_rows), unsafe_allow_html=True)
-                            else:
-                                st.markdown("<small style='color:#94a3b8;'>No expenditures logged for this project allocation yet.</small>", unsafe_allow_html=True)
+                            
+                            # Append Initial Allotment at the bottom
+                            alloc_date_str = f"({b['created_at']})" if b.get('created_at') else "(Date N/A)"
+                            spend_rows.append(f"• ➕ **PKR {b['allocated']:,.0f}** — *(Initial Allotment)* <span style='color:#64748b; font-size:0.75rem;'>{alloc_date_str}</span>")
+                            
+                            st.markdown("<br/>".join(spend_rows), unsafe_allow_html=True)
                             
                             if p_idx < len(wd["breakdown"]) - 1:
                                 st.write("---")
@@ -2453,9 +2460,9 @@ elif menu == "🏢 Execution(Accounts)":
                     l_all = tables["ledgers"]
                     p_ledgers = l_all[l_all["project_id"] == pid] if not l_all.empty else pd.DataFrame()
 
-                    exp_data = p_ledgers[p_ledgers["type"] == "expense"][["id", "title", "amount", "cheque_number"]] if not p_ledgers.empty else pd.DataFrame()
-                    inc_data = p_ledgers[p_ledgers["type"] == "income"][["id", "title", "amount", "cheque_number"]] if not p_ledgers.empty else pd.DataFrame()
-                    loan_data = p_ledgers[p_ledgers["type"] == "loan"][["id", "title", "amount", "cheque_number"]] if not p_ledgers.empty else pd.DataFrame()
+                    exp_data = p_ledgers[p_ledgers["type"] == "expense"][["id", "title", "amount", "cheque_number", "created_at"]] if not p_ledgers.empty else pd.DataFrame()
+                    inc_data = p_ledgers[p_ledgers["type"] == "income"][["id", "title", "amount", "cheque_number", "created_at"]] if not p_ledgers.empty else pd.DataFrame()
+                    loan_data = p_ledgers[p_ledgers["type"] == "loan"][["id", "title", "amount", "cheque_number", "created_at"]] if not p_ledgers.empty else pd.DataFrame()
 
                     # ==========================================
                     # END-TO-END PROJECT AUDIT & SUMMARY EXPANDER
@@ -2843,8 +2850,8 @@ elif menu == "🏢 Execution(Accounts)":
 
                                 if not p_spends_df.empty:
                                     st.markdown("**Itemized Field Spend Receipts**")
-                                    disp_sp = p_spends_df[["item_name", "amount_spent"]].copy()
-                                    disp_sp.columns = ["Item Description", "Amount (PKR)"]
+                                    disp_sp = p_spends_df[["created_at", "item_name", "amount_spent"]].copy()
+                                    disp_sp.columns = ["Date", "Item Description", "Amount (PKR)"]
                                     disp_sp["Amount (PKR)"] = disp_sp["Amount (PKR)"].apply(lambda x: f"PKR {_safe_float(x):,.0f}")
                                     disp_sp.insert(0, "#", range(1, len(disp_sp) + 1))
                                     st.dataframe(disp_sp, hide_index=True, use_container_width=True)
@@ -2852,9 +2859,6 @@ elif menu == "🏢 Execution(Accounts)":
                                 st.caption("No staff field advances provisioned for this project.")
 
                     t1, t2, t3 = st.tabs(["🟢 Income", "🔵 Loans", "💳 Staff Advances"])
-
-                    def render_simple_form_tab(data_df, ledger_type, label_name, sub_p_name=None):
-                        has_nature = (ledger_type == "income")
                         
                     def render_simple_form_tab(data_df, ledger_type, label_name, has_nature=False):
                         target_data_df = data_df.copy() if not data_df.empty else pd.DataFrame()
@@ -2865,13 +2869,19 @@ elif menu == "🏢 Execution(Accounts)":
                                 edit_key = f"edit_{ledger_type}_{row_id}"
                                 is_editing_row = st.session_state.get(edit_key, False)
                                 nature_val = row.get("cheque_number") if not pd.isna(row.get("cheque_number")) else None
+                                row_date = row.get("created_at")
 
                                 with st.container(border=True):
                                     rc1, rc2, rc3 = st.columns([4, 2.5, 1.8])
-                                    title_display = str(row["title"])
+                                    title_display = f"**{row['title']}**"
+                                    meta_info = []
+                                    if row_date and not pd.isna(row_date):
+                                        meta_info.append(f"📅 **{row_date}**")
                                     if has_nature and nature_val:
-                                        title_display += f"  \n🏷️ Payment Nature: `{nature_val}`"
-                                    rc1.markdown(f"**{title_display}**")
+                                        meta_info.append(f"🏷️ Payment Nature: `{nature_val}`")
+                                    if meta_info:
+                                        title_display += "  \n" + " | ".join(meta_info)
+                                    rc1.markdown(title_display)
                                     rc2.markdown(f"PKR {_safe_float(row['amount']):,.0f}")
                                     if not is_read_only:
                                         ed_col1, ed_col2 = rc3.columns(2)
@@ -3024,12 +3034,26 @@ elif menu == "🏢 Execution(Accounts)":
                                             else:
                                                 edit_person = adv["person_name"]
                                             edit_alloc = st.number_input("Allocated Amount (PKR)", min_value=0.0, step=500.0, value=allocated)
+                                            
+                                            has_created_at = "created_at" in tables["advances"].columns
+                                            edit_date = None
+                                            if has_created_at:
+                                                raw_date = adv.get("created_at")
+                                                try:
+                                                    default_date = datetime.datetime.strptime(str(raw_date), "%Y-%m-%d").date() if raw_date and not pd.isna(raw_date) else datetime.date.today()
+                                                except Exception:
+                                                    default_date = datetime.date.today()
+                                                edit_date = st.date_input("Allotment Date", value=default_date, key=f"edit_date_{adv_id}")
+                                                
                                             fs1, fs2 = st.columns(2)
                                             save_adv = fs1.form_submit_button("💾 Save", type="primary", use_container_width=True)
                                             cancel_adv = fs2.form_submit_button("✖️ Cancel", use_container_width=True)
                                             if save_adv:
                                                 try:
-                                                    sb.table("advances").update({"person_name": edit_person, "allocated_amount": float(edit_alloc)}).eq("id", adv_id).execute()
+                                                    payload = {"person_name": edit_person, "allocated_amount": float(edit_alloc)}
+                                                    if has_created_at and edit_date:
+                                                        payload["created_at"] = edit_date.strftime("%Y-%m-%d")
+                                                    sb.table("advances").update(payload).eq("id", adv_id).execute()
                                                     st.session_state[edit_key] = False
                                                     confirm_and_rerun(f"✏️ Advance allocation updated for {edit_person}.", icon="💾")
                                                 except Exception as e:
@@ -3076,7 +3100,12 @@ elif menu == "🏢 Execution(Accounts)":
 
                                             with st.container(border=True):
                                                 rc1, rc2, rc3 = st.columns([4.5, 2.5, 1.5])
-                                                rc1.markdown(f"🧾 {sp_dict['_description']}")
+                                                sp_date = sp_dict.get("created_at")
+                                                sp_date_str = f"📅 **{sp_date}**" if sp_date and not pd.isna(sp_date) else ""
+                                                desc_display = f"🧾 {sp_dict['_description']}"
+                                                if sp_date_str:
+                                                    desc_display += f"  \n{sp_date_str}"
+                                                rc1.markdown(desc_display)
                                                 rc2.markdown(f"**PKR {_safe_float(sp_dict['amount_spent']):,.0f}**")
 
                                                 if can_act:
@@ -3106,6 +3135,8 @@ elif menu == "🏢 Execution(Accounts)":
 
                                                     edit_desc = st.text_input("Description", value=sp_dict["_description"], key=f"ed_desc_{sp_id}")
                                                     edit_amt = st.number_input("Amount (PKR)", min_value=0.0, step=100.0, value=float(sp_dict["amount_spent"]), key=f"ed_amt_{sp_id}")
+                                                    sp_dt_val = _safe_date(sp_dict.get("created_at"))
+                                                    edit_date = st.date_input("Record Date", value=sp_dt_val, key=f"ed_date_{sp_id}")
                                                     sc1, sc2 = st.columns(2)
                                                     save_btn = sc1.form_submit_button("💾 Save", type="primary", use_container_width=True)
                                                     cancel_btn = sc2.form_submit_button("✖️ Cancel", use_container_width=True)
@@ -3123,7 +3154,8 @@ elif menu == "🏢 Execution(Accounts)":
                                                                         item_fmt = f"[{chosen_cat}] {edit_desc.strip()}"
                                                                     sb.table("advance_spends").update({
                                                                         "item_name": item_fmt,
-                                                                        "amount_spent": float(edit_amt)
+                                                                        "amount_spent": float(edit_amt),
+                                                                        "created_at": str(edit_date)
                                                                     }).eq("id", sp_id).execute()
                                                                     st.session_state[sp_edit_key] = False
                                                                     confirm_and_rerun("Updated spend entry.", icon="💾")
@@ -3199,9 +3231,10 @@ elif menu == "🏢 Execution(Accounts)":
                                                 if can_act:
                                                     with st.form(f"form_add_in_cat_{adv_id}_{cat_name}", clear_on_submit=True):
                                                         st.markdown(f"➕ **Add Component to {cat_name}**")
-                                                        ic1, ic2 = st.columns(2)
+                                                        ic1, ic2, ic3 = st.columns([2, 2, 2])
                                                         cat_new_desc = ic1.text_input("Description*", placeholder="e.g. USB Cable, Fuel", key=f"cat_desc_{adv_id}_{cat_name}")
                                                         cat_new_amt = ic2.number_input("Amount (PKR)*", value=None, min_value=0.0, step=100.0, key=f"cat_amt_{adv_id}_{cat_name}")
+                                                        cat_new_date = ic3.date_input("Date", value=datetime.date.today(), key=f"cat_date_{adv_id}_{cat_name}")
                                                         if st.form_submit_button("➕ Add", type="primary", use_container_width=True):
                                                             if cat_new_desc.strip() and cat_new_amt is not None and cat_new_amt > 0:
                                                                 if cat_new_amt > remaining + 0.001:
@@ -3211,7 +3244,8 @@ elif menu == "🏢 Execution(Accounts)":
                                                                         sb.table("advance_spends").insert({
                                                                             "advance_id": adv_id,
                                                                             "item_name": f"[{cat_name}] {cat_new_desc.strip()}",
-                                                                            "amount_spent": float(cat_new_amt)
+                                                                            "amount_spent": float(cat_new_amt),
+                                                                            "created_at": str(cat_new_date)
                                                                         }).execute()
                                                                         confirm_and_rerun(f"Added '{cat_new_desc.strip()}' to {cat_name}.", icon="🧾")
                                                                     except Exception as e:
@@ -3240,9 +3274,10 @@ elif menu == "🏢 Execution(Accounts)":
                                                 with st.form(f"form_new_cat_{adv_id}", clear_on_submit=True):
                                                     st.markdown("📂 **Create New Category**")
                                                     new_cat_name = st.text_input("Category Name*", placeholder="e.g. Accessories, Transport, Safety Gear", key=f"new_cat_{adv_id}")
-                                                    nc1, nc2 = st.columns(2)
+                                                    nc1, nc2, nc3 = st.columns([2, 2, 2])
                                                     first_desc = nc1.text_input("First Component (Optional)", placeholder="e.g. USB Cable", key=f"first_desc_{adv_id}")
                                                     first_amt = nc2.number_input("Amount (PKR)", value=None, min_value=0.0, step=100.0, key=f"first_amt_{adv_id}")
+                                                    cat_create_date = nc3.date_input("Date", value=datetime.date.today(), key=f"cat_create_date_{adv_id}")
                                                     if st.form_submit_button("📂 Create Category", type="primary", use_container_width=True):
                                                         if new_cat_name.strip():
                                                             if new_cat_name.strip() in all_category_names:
@@ -3255,7 +3290,8 @@ elif menu == "🏢 Execution(Accounts)":
                                                                         sb.table("advance_spends").insert({
                                                                             "advance_id": adv_id,
                                                                             "item_name": f"[{new_cat_name.strip()}] {first_desc.strip()}",
-                                                                            "amount_spent": float(first_amt)
+                                                                            "amount_spent": float(first_amt),
+                                                                            "created_at": str(cat_create_date)
                                                                         }).execute()
                                                                         st.session_state[add_cat_key] = False
                                                                         confirm_and_rerun(f"Category '{new_cat_name.strip()}' created with first component.", icon="📂")
@@ -3267,7 +3303,8 @@ elif menu == "🏢 Execution(Accounts)":
                                                                     sb.table("advance_spends").insert({
                                                                         "advance_id": adv_id,
                                                                         "item_name": f"[{new_cat_name.strip()}] (Category created)",
-                                                                        "amount_spent": 0.0
+                                                                        "amount_spent": 0.0,
+                                                                        "created_at": str(cat_create_date)
                                                                     }).execute()
                                                                     st.session_state[add_cat_key] = False
                                                                     confirm_and_rerun(f"Category '{new_cat_name.strip()}' created. Add components inside it.", icon="📂")
@@ -3280,9 +3317,10 @@ elif menu == "🏢 Execution(Accounts)":
                                             if st.session_state.get(add_comp_key, False):
                                                 with st.form(f"form_new_comp_{adv_id}", clear_on_submit=True):
                                                     st.markdown("🧾 **Add Standalone Component** *(no category)*")
-                                                    sc1, sc2 = st.columns(2)
+                                                    sc1, sc2, sc3 = st.columns([2, 2, 2])
                                                     comp_desc = sc1.text_input("Description*", placeholder="e.g. Miscellaneous, Parking", key=f"comp_desc_{adv_id}")
                                                     comp_amt = sc2.number_input("Amount (PKR)*", value=None, min_value=0.0, step=100.0, key=f"comp_amt_{adv_id}")
+                                                    comp_date = sc3.date_input("Date", value=datetime.date.today(), key=f"comp_date_{adv_id}")
                                                     if st.form_submit_button("➕ Add Component", type="primary", use_container_width=True):
                                                         if comp_desc.strip() and comp_amt is not None and comp_amt > 0:
                                                             if comp_amt > remaining + 0.001:
@@ -3292,7 +3330,8 @@ elif menu == "🏢 Execution(Accounts)":
                                                                     sb.table("advance_spends").insert({
                                                                         "advance_id": adv_id,
                                                                         "item_name": comp_desc.strip(),
-                                                                        "amount_spent": float(comp_amt)
+                                                                        "amount_spent": float(comp_amt),
+                                                                        "created_at": str(comp_date)
                                                                     }).execute()
                                                                     st.session_state[add_comp_key] = False
                                                                     confirm_and_rerun(f"Logged standalone spend '{comp_desc.strip()}'.", icon="🧾")
@@ -3328,14 +3367,24 @@ elif menu == "🏢 Execution(Accounts)":
                                         new_person = st.selectbox("Select Target Advance Field Worker", advance_usernames)
                                         new_alloc = st.number_input("Initial Allocation Amount (PKR)", value=None, min_value=0.0, step=1000.0, placeholder="Allocation Amount (PKR)", key=f"new_alloc_adv_{pid}")
                                         
+                                        has_created_at = "created_at" in tables["advances"].columns
+                                        new_date = None
+                                        if has_created_at:
+                                            new_date = st.date_input("Allotment Date", value=datetime.date.today(), key=f"new_date_adv_{pid}")
+                                        else:
+                                            st.info("💡 Run the SQL migration to enable allotment dates.")
+                                            
                                         if st.form_submit_button("➕ Provision Advanced Balance Outflow", use_container_width=True):
                                             if new_person and new_alloc is not None and new_alloc > 0:
                                                 try:
-                                                    sb.table("advances").insert({
+                                                    payload = {
                                                         "project_id": pid,
                                                         "person_name": new_person,
                                                         "allocated_amount": float(new_alloc)
-                                                    }).execute()
+                                                    }
+                                                    if has_created_at and new_date:
+                                                        payload["created_at"] = new_date.strftime("%Y-%m-%d")
+                                                    sb.table("advances").insert(payload).execute()
                                                     confirm_and_rerun(f"💳 Advanced PKR {new_alloc:,.0f} allocated to {new_person}.", icon="✅")
                                                 except Exception as e:
                                                     st.error(f"Database insertion failed: {e}")
