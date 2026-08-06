@@ -1537,11 +1537,11 @@ def render_monthly_report_view():
     st.markdown(f"##### Monthly Financial Summary — **{sel_month}**")
     
     mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("Monthly Income", f"PKR {total_income:,.0f}")
-    mc2.metric("Monthly Outflow / Spends", f"PKR {total_expense:,.0f}")
-    mc3.metric("Capital Infusions (Loans)", f"PKR {total_loans:,.0f}")
+    mc1.metric("Income", f"PKR {total_income:,.0f}")
+    mc2.metric("Expense", f"PKR {total_expense:,.0f}")
+    mc3.metric("Loans", f"PKR {total_loans:,.0f}")
     net_change = total_income + total_loans - total_expense
-    mc4.metric("Net Flow", f"PKR {net_change:,.0f}")
+    mc4.metric("Profit", f"PKR {net_change:,.0f}")
     
     st.write("---")
 
