@@ -1290,7 +1290,7 @@ active_roles_to_check = user_roles if role in ("All Assigned Roles", "All Roles"
 
 menu_options = []
 if "CEO" in active_roles_to_check or "Accountant" in active_roles_to_check:
-    if current_user.get("can_view_dashboard", True) and "📊 Dashboard" not in menu_options:
+    if "📊 Dashboard" not in menu_options:
         menu_options.append("📊 Dashboard")
     for item in ["📋 Quotation & Planning", "🛒 Purchase", "🎫 Voucher", "💳 Staff Advances", "🏢 Execution(Accounts)", "⚙️ Settings"]:
         if item not in menu_options: menu_options.append(item)
@@ -1757,13 +1757,12 @@ def render_monthly_report_view():
         st.write("---")
 
 if menu == "📊 Dashboard":
-    if role not in ("CEO", "Accountant") or not current_user.get("can_view_dashboard", True):
+    if role not in ("CEO", "Accountant"):
         st.error("🔒 Unauthorized: Access to executive dashboard scopes restricted.")
         st.stop()
 
     if "show_monthly_report" not in st.session_state:
         st.session_state["show_monthly_report"] = False
-
     t_col1, t_col2 = st.columns([7, 3])
     t_col2_btn_lbl = "📈 Back to Dashboard" if st.session_state["show_monthly_report"] else "📅 Monthly Report"
     
