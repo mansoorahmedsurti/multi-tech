@@ -1442,13 +1442,14 @@ def render_monthly_report_view():
         .monthly-report-table {
             width: 100% !important;
             border-collapse: collapse !important;
-            margin-bottom: 12px !important;
-            font-size: 0.85rem !important;
+            margin-bottom: 8px !important;
+            font-size: 0.78rem !important;
+            line-height: 1.2 !important;
             font-family: inherit !important;
         }
         .monthly-report-table th, .monthly-report-table td {
             border: 1px solid #e2e8f0 !important;
-            padding: 5px 8px !important;
+            padding: 4px 6px !important;
             text-align: left !important;
         }
         .monthly-report-table th {
@@ -1460,13 +1461,23 @@ def render_monthly_report_view():
             background-color: #f8fafc !important;
         }
         div.company-print-block {
-            margin-top: 10px !important;
-            margin-bottom: 10px !important;
+            margin-top: 5px !important;
+            margin-bottom: 5px !important;
+        }
+        div.company-print-block h4 {
+            font-size: 1.05rem !important;
+            margin-top: 4px !important;
+            margin-bottom: 4px !important;
         }
         div.project-print-block {
-            margin-left: 15px !important;
-            margin-top: 10px !important;
-            margin-bottom: 10px !important;
+            margin-left: 12px !important;
+            margin-top: 4px !important;
+            margin-bottom: 4px !important;
+        }
+        div.project-print-block h5 {
+            font-size: 0.9rem !important;
+            margin-top: 3px !important;
+            margin-bottom: 3px !important;
         }
         
         @media print {
@@ -1482,10 +1493,10 @@ def render_monthly_report_view():
             }
             /* Reset Block Container Padding and Max-Width */
             div.block-container {
-                padding-top: 0.5rem !important;
-                padding-bottom: 0.5rem !important;
-                padding-left: 0.5rem !important;
-                padding-right: 0.5rem !important;
+                padding-top: 0.25rem !important;
+                padding-bottom: 0.25rem !important;
+                padding-left: 0.25rem !important;
+                padding-right: 0.25rem !important;
                 max-width: 100% !important;
             }
             /* Clean table formatting for paper */
@@ -1495,13 +1506,19 @@ def render_monthly_report_view():
             }
             .monthly-report-table th, .monthly-report-table td {
                 border: 1px solid #cbd5e1 !important;
-                padding: 4px 6px !important;
-                font-size: 9pt !important;
+                padding: 3px 4px !important;
+                font-size: 8pt !important;
             }
             h1, h2, h3, h4, h5 {
                 color: #000000 !important;
                 font-family: Arial, sans-serif !important;
                 page-break-after: avoid;
+            }
+            div.company-print-block h4 {
+                font-size: 10pt !important;
+            }
+            div.project-print-block h5 {
+                font-size: 9pt !important;
             }
             /* Avoid breaking in the middle of a project/company block */
             div.company-print-block, div.project-print-block {
