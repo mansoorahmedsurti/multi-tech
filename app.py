@@ -1625,6 +1625,7 @@ if menu == "📊 Dashboard":
     if st.session_state["show_monthly_report"]:
         t_col1.title("📅 Monthly Ledger Report")
         render_monthly_report_view()
+        st.stop()
     else:
         t_col1.title("📊 Financial Scope Overview")
         time_filter = st.selectbox("Statistics Scope Range", ["All Time", "Today", "This Month", "Last 30 Days"])
