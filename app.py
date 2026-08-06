@@ -1830,8 +1830,7 @@ if menu == "📊 Dashboard":
     m1.metric("Balance", f"PKR {overall_bal:,.0f}" if overall_bal else "PKR 0")
     m2.metric("Income", f"PKR {inc:,.0f}" if inc else "PKR 0")
     
-    num_spends = len(filt_spends) if not filt_spends.empty else 0
-    m3.metric("Staff Expenses", f"PKR {spent_adv:,.0f}" if spent_adv else "PKR 0", delta=f"{num_spends} Spends logged", delta_color="inverse")
+    m3.metric("Expenses", f"PKR {spent_adv:,.0f}" if spent_adv else "PKR 0")
     m4.metric("Profit", f"PKR {net_profit:,.0f}" if net_profit else "PKR 0")
 
     with st.expander(f"📊 Detailed Financial Summary ({time_filter})"):
