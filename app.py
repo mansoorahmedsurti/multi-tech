@@ -1310,7 +1310,7 @@ if st.sidebar.button("🚪 Log out", use_container_width=True):
 # ==============================================================================
 
 def render_monthly_report_view():
-    st.subheader("📅 Monthly Financial Ledger Report")
+    st.subheader("📅 Monthly Report")
     
     def _parse_sp_item(item_val):
         t_str = str(item_val).strip()
@@ -1609,8 +1609,7 @@ def render_monthly_report_view():
         })
 
     # Display overall monthly metrics card
-    st.markdown("### 🏢 Multi Tech Engineering Group")
-    st.markdown(f"##### Monthly Financial Summary — **{sel_month}**")
+    
     
     mc1, mc2, mc3, mc4 = st.columns(4)
     mc1.metric("Income", f"PKR {total_income:,.0f}")
@@ -1773,7 +1772,7 @@ if menu == "📊 Dashboard":
         st.rerun()
 
     if st.session_state["show_monthly_report"]:
-        t_col1.title("📅 Monthly Ledger Report")
+        t_col1.image("logo.png", width=120)
         render_monthly_report_view()
         st.stop()
     else:
