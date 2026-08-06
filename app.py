@@ -1327,6 +1327,8 @@ def render_monthly_report_view():
     spends_df = tables["spends"].copy()
     companies_df = tables["companies"].copy()
     projects_df = tables["projects"].copy()
+    vouchers_df = tables.get("vouchers", pd.DataFrame()).copy()
+    quotations_df = tables.get("quotations", pd.DataFrame()).copy()
     
     # Build dictionaries for easy lookups
     proj_map = {}
@@ -1384,6 +1386,18 @@ def render_monthly_report_view():
                 
     if not spends_df.empty:
         for val in spends_df["created_at"]:
+            m_str = get_month_year_str(val)
+            if m_str:
+                months_set.add(m_str)
+
+    if not vouchers_df.empty:
+        for val in vouchers_df["created_at"]:
+            m_str = get_month_year_str(val)
+            if m_str:
+                months_set.add(m_str)
+
+    if not quotations_df.empty:
+        for val in quotations_df["created_at"]:
             m_str = get_month_year_str(val)
             if m_str:
                 months_set.add(m_str)
@@ -1483,6 +1497,60 @@ def render_monthly_report_view():
         c_id = p_info["company_id"] if p_info else None
         c_name = comp_map.get(c_id) if c_id else "General Workspace"
         return c_name, p_name
+
+    # Determine all project IDs active or created in the selected month
+    active_project_ids = set()
+    
+    # 1) Projects with ledger transactions in the selected month
+    for l in filt_ledgers:
+        pid = int(l["project_id"]) if l.get("project_id") and not pd.isna(l["project_id"]) else None
+        if pid:
+            active_project_ids.add(pid)
+            
+    # 2) Projects with staff spends logged in the selected month
+    for s in filt_spends:
+        adv_id = int(s["advance_id"]) if s.get("advance_id") and not pd.isna(s["advance_id"]) else None
+        adv_info = adv_map.get(adv_id) if adv_id else None
+        pid = adv_info["project_id"] if adv_info else None
+        if pid:
+            active_project_ids.add(pid)
+            
+    # 3) Projects with vouchers created in the selected month
+    if not vouchers_df.empty:
+        for _, v_r in vouchers_df.iterrows():
+            try:
+                v_dt = pd.to_datetime(v_r["created_at"])
+                if v_dt.year == sel_year and v_dt.month == sel_month_num:
+                    pid = int(v_r["project_id"]) if v_r.get("project_id") and not pd.isna(v_r["project_id"]) else None
+                    if pid:
+                        active_project_ids.add(pid)
+            except Exception:
+                pass
+
+    # 4) Projects with quotations created in the selected month
+    if not quotations_df.empty:
+        for _, q_r in quotations_df.iterrows():
+            try:
+                q_dt = pd.to_datetime(q_r["created_at"])
+                if q_dt.year == sel_year and q_dt.month == sel_month_num:
+                    q_pname = str(q_r["project_name"]).strip().lower()
+                    q_cname = str(q_r["company_name"]).strip().lower()
+                    for p_id, p_info in proj_map.items():
+                        p_name = p_info["name"].strip().lower()
+                        c_id = p_info["company_id"]
+                        c_name = comp_map.get(c_id, "").strip().lower()
+                        if p_name == q_pname and c_name == q_cname:
+                            active_project_ids.add(p_id)
+            except Exception:
+                pass
+
+    # Initialize all active/created projects in grouped_data
+    for p_id in active_project_ids:
+        c_name, p_name = get_company_project_for_pid(p_id)
+        if c_name not in grouped_data:
+            grouped_data[c_name] = {}
+        if p_name not in grouped_data[c_name]:
+            grouped_data[c_name][p_name] = []
 
     # Monthly wide totals
     total_income = 0.0
