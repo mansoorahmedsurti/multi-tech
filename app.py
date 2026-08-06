@@ -1312,6 +1312,14 @@ if st.sidebar.button("🚪 Log out", use_container_width=True):
 def render_monthly_report_view():
     st.subheader("📅 Monthly Financial Ledger Report")
     
+    def _parse_sp_item(item_val):
+        t_str = str(item_val).strip()
+        if t_str.startswith("[") and "]" in t_str:
+            cat_part = t_str[1:t_str.index("]")].strip()
+            desc_part = t_str[t_str.index("]") + 1:].strip()
+            return cat_part, desc_part
+        return None, t_str
+    
     # 1. Fetch tables
     tables = fetch_all_table_data()
     ledgers_df = tables["ledgers"].copy()
@@ -1555,48 +1563,122 @@ def render_monthly_report_view():
         c_expense = 0.0
         c_loans = 0.0
         
-        projects_summary = []
+        # Company Header Box
+        st.markdown(f"<div class='company-print-block'>", unsafe_allow_html=True)
+        st.markdown(f"#### 🏢 Company: **{c_name}**")
         
         for p_name, tx_list in sorted(projects_dict.items()):
             p_income = 0.0
             p_expense = 0.0
             p_loans = 0.0
             
-            for tx in tx_list:
-                amt = tx["amount"]
-                txtype = tx["type"]
-                if txtype == "INCOME":
-                    p_income += amt
-                elif txtype in ("EXPENSE", "SPEND"):
-                    p_expense += amt
-                elif txtype == "LOAN":
-                    p_loans += amt
-                    
-            p_net_flow = p_income + p_loans - p_expense
+            tx_rows = []
             
-            projects_summary.append({
-                "Project Name": p_name,
-                "Income (Inflow)": f"PKR {p_income:,.0f}",
-                "Outcome (Outflow)": f"PKR {p_expense:,.0f}",
-                "Loans": f"PKR {p_loans:,.0f}",
-                "Net Flow": f"PKR {p_net_flow:,.0f}"
-            })
+            # 1. Income entries (individual)
+            project_income_list = [t for t in tx_list if t["type"] == "INCOME"]
+            for tx in sorted(project_income_list, key=lambda x: x["date"]):
+                amt = tx["amount"]
+                p_income += amt
+                tx_rows.append({
+                    "Date": tx["date"],
+                    "Type": "🟢 INCOME",
+                    "Description": tx["title"],
+                    "Reference": tx["cheque"],
+                    "Amount (PKR)": f"PKR {amt:,.0f}"
+                })
+                
+            # 2. Loan entries (individual)
+            project_loan_list = [t for t in tx_list if t["type"] == "LOAN"]
+            for tx in sorted(project_loan_list, key=lambda x: x["date"]):
+                amt = tx["amount"]
+                p_loans += amt
+                tx_rows.append({
+                    "Date": tx["date"],
+                    "Type": "🔵 LOAN",
+                    "Description": tx["title"],
+                    "Reference": tx["cheque"],
+                    "Amount (PKR)": f"PKR {amt:,.0f}"
+                })
+
+            # 3. Expenses (Direct Expenses + Staff Spends)
+            direct_expenses = [t for t in tx_list if t["type"] == "EXPENSE"]
+            staff_spends = [t for t in tx_list if t["type"] == "SPEND"]
+            
+            # Group staff spends by category
+            categorized_spends = {}  # {category: sum_amount}
+            standalone_spends = []   # list of spends
+            
+            for s in staff_spends:
+                cat, desc = _parse_sp_item(s["title"])
+                if cat:
+                    categorized_spends[cat] = categorized_spends.get(cat, 0.0) + s["amount"]
+                else:
+                    s_copy = dict(s)
+                    s_copy["title"] = desc  # Clean title
+                    standalone_spends.append(s_copy)
+            
+            # Add categorized spends as grouped category rows
+            for cat, cat_amt in sorted(categorized_spends.items()):
+                p_expense += cat_amt
+                tx_rows.append({
+                    "Date": "—",
+                    "Type": "📂 EXPENSE (CAT)",
+                    "Description": f"Category: {cat}",
+                    "Reference": "—",
+                    "Amount (PKR)": f"PKR {cat_amt:,.0f}"
+                })
+                
+            # Add standalone spends individually
+            for s in sorted(standalone_spends, key=lambda x: x["date"]):
+                amt = s["amount"]
+                p_expense += amt
+                tx_rows.append({
+                    "Date": s["date"],
+                    "Type": "🧾 EXPENSE (SPEND)",
+                    "Description": s["title"],
+                    "Reference": "—",
+                    "Amount (PKR)": f"PKR {amt:,.0f}"
+                })
+                
+            # Add direct ledger expenses individually
+            for e in sorted(direct_expenses, key=lambda x: x["date"]):
+                amt = e["amount"]
+                p_expense += amt
+                tx_rows.append({
+                    "Date": e["date"],
+                    "Type": "🧾 EXPENSE (DIRECT)",
+                    "Description": e["title"],
+                    "Reference": e["cheque"],
+                    "Amount (PKR)": f"PKR {amt:,.0f}"
+                })
+                
+            # Project Header Box and Table
+            st.markdown(f"<div class='project-print-block' style='margin-left: 20px; margin-top: 15px;'>", unsafe_allow_html=True)
+            st.markdown(f"##### 📁 Project: **{p_name}**")
+            
+            if tx_rows:
+                df_tx = pd.DataFrame(tx_rows)
+                df_tx.insert(0, "#", range(1, len(df_tx) + 1))
+                st.table(df_tx)
+            else:
+                st.caption("No transaction entries logged this month.")
+                
+            st.markdown(
+                f"<p style='font-size:0.9rem; font-weight:600; text-align:right; margin-top:-10px; margin-bottom:15px;'>"
+                f"Project Subtotals &rarr; Inflow: <span style='color:#10B981;'>PKR {p_income:,.0f}</span> | "
+                f"Outflow: <span style='color:#EF4444;'>PKR {p_expense:,.0f}</span> | "
+                f"Loan: <span style='color:#3B82F6;'>PKR {p_loans:,.0f}</span>"
+                f"</p>",
+                unsafe_allow_html=True
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
             
             c_income += p_income
             c_expense += p_expense
             c_loans += p_loans
 
-        # Company Header Box
-        st.markdown(f"<div class='company-print-block'>", unsafe_allow_html=True)
-        st.markdown(f"#### 🏢 Company: **{c_name}**")
-        
-        # Build DataFrame for projects summary list under this company
-        df_p_summary = pd.DataFrame(projects_summary)
-        df_p_summary.insert(0, "#", range(1, len(df_p_summary) + 1))
-        st.table(df_p_summary)
-        
         st.markdown(
-            f"<p style='font-size:0.95rem; font-weight:600; text-align:right; margin-top:-10px; margin-bottom:20px;'>"
+            f"<p style='font-size:0.95rem; font-weight:600; text-align:right; margin-top:5px; margin-bottom:20px;'>"
             f"🏢 {c_name} Subtotals &rarr; "
             f"Income: <span style='color:#10B981;'>PKR {c_income:,.0f}</span> | "
             f"Outcome/Spends: <span style='color:#EF4444;'>PKR {c_expense:,.0f}</span> | "
